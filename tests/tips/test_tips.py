@@ -2,6 +2,7 @@ from datetime import date
 from decimal import Decimal
 
 from accrual.accrual.tips import (
+    interpolated_ref_cpi,
     index_ratio,
     inflation_compensation_on,
     maturity_redemption,
@@ -62,3 +63,28 @@ def test_deflation_floor_keeps_par_at_maturity() -> None:
 def test_without_floor_deflation_reduces_redemption() -> None:
     no_floor = TipsBond(**{**SAMPLE0007.__dict__, "deflation_floor": False})
     assert maturity_redemption(no_floor, Decimal("1000000"), flat(BASE * Decimal("0.9"))) == Decimal("900000.00")
+
+
+CPI = {
+    (2023, 10): Decimal("307.671"),
+    (2023, 11): Decimal("307.051"),
+    (2023, 12): Decimal("306.746"),
+    (2024, 1): Decimal("308.417"),
+    (2024, 2): Decimal("310.326"),
+}
+
+
+def test_ref_cpi_on_first_of_month_is_cpi_three_months_earlier() -> None:
+    assert interpolated_ref_cpi(CPI, date(2024, 2, 1)) == Decimal("307.051")
+
+
+def test_ref_cpi_mid_month_interpolates_linearly_over_days() -> None:
+    assert interpolated_ref_cpi(CPI, date(2024, 1, 15)) == Decimal("307.391")
+    assert interpolated_ref_cpi(CPI, date(2024, 1, 15)) == BASE
+
+
+def test_ref_cpi_missing_month_raises() -> None:
+    import pytest
+
+    with pytest.raises(ValueError):
+        interpolated_ref_cpi({}, date(2024, 1, 15))

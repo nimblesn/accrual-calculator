@@ -1,4 +1,5 @@
-from collections.abc import Callable
+import calendar
+from collections.abc import Callable, Mapping
 from datetime import date
 from decimal import ROUND_HALF_UP, Decimal, localcontext
 
@@ -8,6 +9,26 @@ from accrual.rounding import WORKING_PRECISION, RoundingPolicy
 
 _INDEX_RATIO_QUANTUM = Decimal("1E-5")
 RefCpi = Callable[[date], Decimal]
+
+
+def _shift_months(year: int, month: int, delta: int) -> tuple[int, int]:
+    total = year * 12 + (month - 1) + delta
+    return total // 12, total % 12 + 1
+
+
+def interpolated_ref_cpi(monthly_cpi: Mapping[tuple[int, int], Decimal], on: date) -> Decimal:
+    def cpi(delta: int) -> Decimal:
+        key = _shift_months(on.year, on.month, delta)
+        if key not in monthly_cpi:
+            raise ValueError(f"missing CPI for {key[0]:04d}-{key[1]:02d}")
+        return monthly_cpi[key]
+
+    start = cpi(-3)
+    end = cpi(-2)
+    days_in_month = calendar.monthrange(on.year, on.month)[1]
+    with localcontext() as ctx:
+        ctx.prec = WORKING_PRECISION
+        return start + Decimal(on.day - 1) / Decimal(days_in_month) * (end - start)
 
 
 def index_ratio(ref_cpi: Decimal, base_ref_cpi: Decimal) -> Decimal:
