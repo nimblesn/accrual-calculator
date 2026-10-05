@@ -69,9 +69,7 @@ def test_sell_row_fails_validation_with_row_number(tmp_path: Path) -> None:
     trades = directory / "trades.csv"
     lines = trades.read_text(encoding="utf-8").splitlines()
     lines.append("T0008,L0008,P01,SAMPLE0001,SELL,2024-05-20,2024-05-22,300000,100.500,,0")
-    trades.write_text("
-".join(lines) + "
-", encoding="utf-8")
+    trades.write_text("\n".join(lines) + "\n", encoding="utf-8")
     with pytest.raises(ValidationFailed) as excinfo:
         load_inputs(directory, CALC_END)
     messages = [str(error) for error in excinfo.value.errors]
