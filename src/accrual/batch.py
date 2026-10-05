@@ -18,7 +18,7 @@ from accrual.calendar import adjust_payment_date, cash_dates
 from accrual.disposal import Allocation
 from accrual.io.loaders import TRADES, Inputs, Security, Trade, load_inputs
 from accrual.io.parsing import ValidationError, ValidationFailed
-from accrual.models.bond import TipsBond
+from accrual.models.bond import PassThroughBond, TipsBond
 from accrual.models.period import CashFlow, ProjectionVersion
 from accrual.models.result import AmortizationResult, AmortizationRow
 from accrual.rounding import RoundingPolicy
@@ -226,8 +226,8 @@ def _engine(inputs: Inputs, security: Security, trade: Trade, face: Decimal, end
             bond, face, inputs.fixings, settlement, price, cost, end, opening=state, pay_date=pay,
         )
     if security.bond_type in ("MBS", "ABS"):
-        scaled_bond = replace(bond, original_face=bond.original_face * fraction)
         factors = inputs.pool_factors.get(security.security_id, [])
+        scaled_bond = _lot_bond(bond, factors, trade, face)
         projections = [
             _scaled(version, _projection_ratio(version, factors, trade, face, fraction), pay)
             for version in inputs.projections.get(security.security_id, [])
@@ -245,6 +245,15 @@ def _pay_date_fn(inputs: Inputs, security: Security) -> Callable[[date], date]:
     calendar = inputs.holidays[security.calendar_id]
     convention = security.business_day_convention
     return lambda day: adjust_payment_date(day, convention, calendar)
+
+
+def _lot_bond(bond: PassThroughBond, factors: list[PoolFactor], trade: Trade, face: Decimal) -> PassThroughBond:
+    """The pool restated to this lot: security_master original_face is the whole pool, so the lot's
+    original face is its face (a balance at settlement) divided by the factor at settlement."""
+    at_settlement = factor_on(factors, trade.settlement_date)
+    if at_settlement is None or at_settlement.factor == 0:
+        raise ValueError(f"{trade.lot_id}: no positive pool factor on or before settlement")
+    return replace(bond, original_face=face / at_settlement.factor)
 
 
 def _projection_ratio(
@@ -300,7 +309,8 @@ def _accrued_at_settlement(
         rated = rated_periods(bond, inputs.fixings)
         return floating_accrued_on(bond, trade.face_amount, rated, settlement)
     if security.bond_type in ("MBS", "ABS"):
-        return pass_through_accrued_on(bond, inputs.pool_factors.get(security.security_id, []), settlement)
+        factors = inputs.pool_factors.get(security.security_id, [])
+        return pass_through_accrued_on(_lot_bond(bond, factors, trade, trade.face_amount), factors, settlement)
     return tips_accrued_on(bond, trade.face_amount, _ref_cpi(inputs, security), settlement)
 
 

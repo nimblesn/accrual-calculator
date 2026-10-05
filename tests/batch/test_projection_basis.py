@@ -59,12 +59,6 @@ def test_unit_ratio_basis_matches_lot_face_projection(inputs: Path, tmp_path: Pa
     assert lot_rows(tmp_path / "basis.csv", "L0006") == lot_rows(tmp_path / "base.csv", "L0006")
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="MBS accrued interest still uses the pool's original_face for every lot (each split lot accrues "
-    "148,958.33, the whole pool's amount), so dirty cost and EIR differ per lot. Open question: is "
-    "security_master.original_face the pool or the holding?",
-)
 def test_split_lots_share_one_projection(inputs: Path, tmp_path: Path) -> None:
     run_batch(SAMPLES, tmp_path / "base.csv", CALC_END)
     with_basis(inputs, {"SAMPLE0005": BASIS})
@@ -76,8 +70,10 @@ def test_split_lots_share_one_projection(inputs: Path, tmp_path: Path) -> None:
     b = lot_rows(tmp_path / "split.csv", "L0006B")
     assert len(a) == len(b) == len(base)
     for whole, part_a, part_b in zip(base, a, b):
-        # Same cash flows per unit of face => same EIR; amounts split 60/40 up to cent rounding.
-        assert part_a["eir"] == part_b["eir"] == whole["eir"]
+        # Same cash flows per unit of face => same EIR, except that each lot's acquisition cost
+        # (accrued interest at settlement) is rounded to the cent separately: last-digit differences only.
+        for part in (part_a, part_b):
+            assert abs(Decimal(part["eir"]) - Decimal(whole["eir"])) <= Decimal("1E-11")
         total = Decimal(part_a["amortized_cost"]) + Decimal(part_b["amortized_cost"])
         assert abs(total - Decimal(whole["amortized_cost"])) <= Decimal("0.01")
 

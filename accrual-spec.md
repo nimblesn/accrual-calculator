@@ -211,7 +211,9 @@ class DayCountConvention(ABC):
 - 후행 복리(compounding in arrears, 예: SOFR)와 관측 지연(lookback)은 **지원 필요로 범위에는 포함되나, 상세 요구사항 확정 전까지 미구현** [확인필요, 범위 확장 승인 — 1.5, 15장 참고]
 
 ### 6.3 MBS
-- 현재 잔액 = `원금 × Pool Factor`. Factor 변경일 이후 구간부터 새 잔액으로 경과이자 계산
+- 금액 기준 [확정]: security_master `original_face`는 **풀 전체** 발행 원금, trades `face_amount`는 **보유분**(결제 시점 잔액)이다.
+- 로트 원금 = `face_amount / factor(결제일)` (factor(d) = d 이하 최신 Factor)
+- 로트 현재 잔액 = `로트 원금 × Pool Factor`. Factor 변경일 이후 구간부터 새 잔액으로 경과이자 계산
 - 경과이자 = 현재 잔액 × 쿠폰 × DCF (기본 Day Count: 30P/360 [가정])
 - 지급 지연(payment delay) 일수는 **현금 수령일**에만 영향을 주며 경과이자 발생에는 영향을 주지 않는다 [확정]
 - 조기상환 반영: 프로그램이 조기상환을 추정하지 않고, 외부에서 **예상 현금흐름(원금/이자)** 을 입력받는다.
