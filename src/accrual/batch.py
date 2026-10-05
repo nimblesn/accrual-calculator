@@ -8,7 +8,7 @@ from accrual.accrual.accrued_interest import accrued_interest_on
 from accrual.accrual.floating import floating_accrued_on, rated_periods
 from accrual.accrual.pass_through import pass_through_accrued_on
 from accrual.accrual.tips import RefCpi, inflation_compensation_on, interpolated_ref_cpi, tips_accrued_on
-from accrual.amortization.effective_interest import fixed_rate_amortization, floating_amortization
+from accrual.amortization.effective_interest import OpeningState, fixed_rate_amortization, floating_amortization
 from accrual.amortization.pass_through import pass_through_amortization
 from accrual.amortization.straight_line import zero_coupon_amortization
 from accrual.amortization.tips import tips_amortization
@@ -59,6 +59,8 @@ def run_batch(input_dir: Path, output: Path, calc_end: date) -> BatchReport:
             warning = _accrued_warning(inputs, security, trade)
             if warning is not None:
                 warnings.append(warning)
+            if trade.opening is not None:
+                warnings.extend(_opening_warnings(inputs, security, trade))
             lot_rows = _lot_rows(inputs, security, trade, warnings)
             inflation = _inflation_series(inputs, security, trade, [row for row, _ in lot_rows])
             for row, disposal in lot_rows:
@@ -85,7 +87,7 @@ def _lot_rows(
         faces.append(faces[-1] - allocation.face)
 
     rows: list[tuple[AmortizationRow, Disposal | None]] = []
-    lower = trade.settlement_date
+    lower = _start(trade)
     for index, face in enumerate(faces):
         allocation = sold[index] if index < len(sold) else None
         upper = allocation.sale.settlement_date if allocation else calc_end
@@ -131,18 +133,30 @@ def _disposal(
     )
 
 
+def _start(trade: Trade) -> date:
+    return trade.opening.as_of if trade.opening is not None else trade.settlement_date
+
+
 def _engine(inputs: Inputs, security: Security, trade: Trade, face: Decimal, end: date) -> AmortizationResult:
     bond = security.bond
     price = trade.clean_price
-    settlement = trade.settlement_date
+    settlement = _start(trade)
     fraction = face / trade.face_amount
     cost = trade.transaction_cost * fraction
+    opening = trade.opening
+    if security.bond_type == "FIXED" and bond.coupon_freq == 0:
+        basis = None
+        if opening is not None:
+            basis = RoundingPolicy.round_amount(opening.amortized_cost * fraction, security.currency)
+        return zero_coupon_amortization(bond, face, settlement, price, cost, end, opening_cost=basis)
+    state = None
+    if opening is not None:
+        dirty = opening.amortized_cost + _accrued_at_settlement(inputs, security, trade, settlement)
+        state = OpeningState(dirty=dirty * fraction, rate=opening.eir_periodic)
     if security.bond_type == "FIXED":
-        if bond.coupon_freq == 0:
-            return zero_coupon_amortization(bond, face, settlement, price, cost, end)
-        return fixed_rate_amortization(bond, face, settlement, price, cost, end)
+        return fixed_rate_amortization(bond, face, settlement, price, cost, end, opening=state)
     if security.bond_type == "FLOATING":
-        return floating_amortization(bond, face, inputs.fixings, settlement, price, cost, end)
+        return floating_amortization(bond, face, inputs.fixings, settlement, price, cost, end, opening=state)
     if security.bond_type in ("MBS", "ABS"):
         scaled_bond = replace(bond, original_face=bond.original_face * fraction)
         projections = [_scaled(version, fraction) for version in inputs.projections.get(security.security_id, [])]
@@ -177,9 +191,11 @@ def _accrued_warning(inputs: Inputs, security: Security, trade: Trade) -> Valida
     )
 
 
-def _accrued_at_settlement(inputs: Inputs, security: Security, trade: Trade) -> Decimal:
+def _accrued_at_settlement(
+    inputs: Inputs, security: Security, trade: Trade, settlement: date | None = None
+) -> Decimal:
     bond = security.bond
-    settlement = trade.settlement_date
+    settlement = settlement or trade.settlement_date
     if security.bond_type == "FIXED":
         return accrued_interest_on(bond, trade.face_amount, settlement)
     if security.bond_type == "FLOATING":
@@ -188,6 +204,17 @@ def _accrued_at_settlement(inputs: Inputs, security: Security, trade: Trade) -> 
     if security.bond_type in ("MBS", "ABS"):
         return pass_through_accrued_on(bond, inputs.pool_factors.get(security.security_id, []), settlement)
     return tips_accrued_on(bond, trade.face_amount, _ref_cpi(inputs, security), settlement)
+
+
+def _opening_warnings(inputs: Inputs, security: Security, trade: Trade) -> list[ValidationError]:
+    opening = trade.opening
+    computed = _accrued_at_settlement(inputs, security, trade, opening.as_of)
+    if computed == opening.accrued_interest:
+        return []
+    return [ValidationError(
+        "opening_balance.csv", None, "accrued_interest",
+        f"{trade.lot_id}: opening accrued {opening.accrued_interest} differs from calculated {computed}",
+    )]
 
 
 def _inflation_series(

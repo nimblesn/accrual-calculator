@@ -1,4 +1,4 @@
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
@@ -20,6 +20,8 @@ CPI_INDEX = "cpi_index.csv"
 POOL_FACTOR = "pool_factor.csv"
 PROJECTED = "projected_cashflows.csv"
 DAYCOUNT_CODE = "daycount_code.csv"
+OPENING_BALANCE = "opening_balance.csv"
+HOLIDAY_CALENDAR = "holiday_calendar.csv"
 
 _MASTER_COLUMNS = (
     "security_id", "bond_type", "currency", "issue_date", "dated_date", "maturity_date",
@@ -37,6 +39,8 @@ _CPI_COLUMNS = ("cpi_index_name", "month", "cpi_value")
 _POOL_COLUMNS = ("security_id", "effective_date", "factor")
 _PROJECTED_COLUMNS = ("security_id", "version", "effective_date", "pay_date", "principal", "interest")
 _DAYCOUNT_COLUMNS = ("code_no", "code_name")
+_OPENING_COLUMNS = ("lot_id", "as_of_date", "face", "amortized_cost", "cumulative_amortization", "accrued_interest", "eir_periodic")
+_HOLIDAY_COLUMNS = ("calendar_id", "date")
 
 
 @dataclass(frozen=True)
@@ -46,6 +50,16 @@ class Security:
     currency: str
     bond: FixedRateBond | FloatingRateBond | PassThroughBond | TipsBond
     cpi_index_name: str | None
+
+
+@dataclass(frozen=True)
+class OpeningBalance:
+    lot_id: str
+    as_of: date
+    face: Decimal
+    amortized_cost: Decimal
+    accrued_interest: Decimal
+    eir_periodic: Decimal | None
 
 
 @dataclass(frozen=True)
@@ -60,6 +74,7 @@ class Trade:
     clean_price: Decimal
     accrued_interest_paid: Decimal | None
     transaction_cost: Decimal
+    opening: OpeningBalance | None = None
 
 
 @dataclass(frozen=True)
@@ -73,6 +88,8 @@ class Inputs:
     projections: dict[str, list[ProjectionVersion]]
     sales: list[Sale] = field(default_factory=list)
     allocations: dict[str, list[Allocation]] = field(default_factory=dict)
+    opening_as_of: date | None = None
+    holidays: dict[str, frozenset[date]] = field(default_factory=dict)
     warnings: list[ValidationError] = field(default_factory=list)
 
 
@@ -85,6 +102,9 @@ def load_inputs(directory: Path, calc_end: date) -> Inputs:
     projections = _load_projections(Table(directory, PROJECTED, _PROJECTED_COLUMNS, errors), securities, errors)
     Table(directory, DAYCOUNT_CODE, _DAYCOUNT_COLUMNS, errors)
     trades, sales = _load_trades(Table(directory, TRADES, _TRADE_COLUMNS, errors), securities, calc_end, errors)
+    openings, as_of = _load_openings(_optional(directory, OPENING_BALANCE, _OPENING_COLUMNS, errors), errors)
+    holidays = _load_holidays(_optional(directory, HOLIDAY_CALENDAR, _HOLIDAY_COLUMNS, errors), errors)
+    trades, sales = _apply_openings(trades, sales, openings, as_of, securities, errors)
     allocations, shortfalls = allocate_fifo(trades, sales)
     errors.extend(ValidationError(TRADES, None, "face_amount", message) for message in shortfalls)
 
@@ -98,6 +118,8 @@ def load_inputs(directory: Path, calc_end: date) -> Inputs:
         projections=projections,
         sales=sales,
         allocations=allocations,
+        opening_as_of=as_of,
+        holidays=holidays,
     )
     errors.extend(_coverage_errors(inputs))
     if errors:
@@ -343,6 +365,106 @@ def _load_trades(
             )
         )
     return trades, sales
+
+
+def _optional(directory: Path, name: str, required: tuple[str, ...], errors: list[ValidationError]) -> Table | None:
+    if not (directory / name).exists():
+        return None
+    return Table(directory, name, required, errors)
+
+
+def _load_openings(
+    table: Table | None, errors: list[ValidationError]
+) -> tuple[dict[str, OpeningBalance], date | None]:
+    openings: dict[str, OpeningBalance] = {}
+    as_of: date | None = None
+    if table is None:
+        return openings, as_of
+    for line, values in table.rows:
+        reader = RowReader(table.name, line, values, errors)
+        lot_id = reader.text("lot_id")
+        row_as_of = reader.date("as_of_date")
+        face = reader.decimal("face")
+        amortized = reader.decimal("amortized_cost")
+        accrued = reader.decimal("accrued_interest")
+        reader.decimal("cumulative_amortization", required=False)
+        eir = reader.decimal("eir_periodic", required=False)
+        if not reader.ok or None in (lot_id, row_as_of, face, amortized, accrued):
+            continue
+        if as_of is None:
+            as_of = row_as_of
+        elif row_as_of != as_of:
+            reader.fail("as_of_date", "all opening balances must share one as_of_date")
+            continue
+        if lot_id in openings:
+            reader.fail("lot_id", "duplicate opening balance for lot")
+            continue
+        openings[lot_id] = OpeningBalance(lot_id, row_as_of, face, amortized, accrued, eir)
+    return openings, as_of
+
+
+def _apply_openings(
+    trades: list[Trade],
+    sales: list[Sale],
+    openings: dict[str, OpeningBalance],
+    as_of: date | None,
+    securities: dict[str, Security],
+    errors: list[ValidationError],
+) -> tuple[list[Trade], list[Sale]]:
+    if as_of is None:
+        return trades, sales
+    kept: list[Trade] = []
+    buy_lots = {trade.lot_id for trade in trades}
+    for lot_id in openings:
+        if lot_id not in buy_lots:
+            errors.append(ValidationError(OPENING_BALANCE, None, "lot_id", f"{lot_id}: no matching BUY in trades"))
+    for trade in trades:
+        opening = openings.get(trade.lot_id)
+        if trade.settlement_date > as_of:
+            if opening is not None:
+                errors.append(ValidationError(OPENING_BALANCE, None, "lot_id",
+                                              f"{trade.lot_id}: opening balance predates its purchase"))
+            kept.append(trade)
+            continue
+        if opening is None:
+            continue
+        security = securities[trade.security_id]
+        if security.bond_type not in ("FIXED", "FLOATING"):
+            errors.append(ValidationError(OPENING_BALANCE, None, "lot_id",
+                                          f"{trade.lot_id}: opening balances are supported for FIXED and FLOATING"))
+            continue
+        if security.bond.coupon_freq != 0 and opening.eir_periodic is None:
+            errors.append(ValidationError(OPENING_BALANCE, None, "eir_periodic",
+                                          f"{trade.lot_id}: eir_periodic is required"))
+            continue
+        if opening.face > trade.face_amount:
+            errors.append(ValidationError(OPENING_BALANCE, None, "face",
+                                          f"{trade.lot_id}: opening face exceeds purchased face"))
+            continue
+        kept.append(replace(
+            trade, face_amount=opening.face, accrued_interest_paid=None,
+            transaction_cost=Decimal(0), opening=opening,
+        ))
+    kept_sales = [sale for sale in sales if sale.settlement_date > as_of]
+    return kept, kept_sales
+
+
+def _load_holidays(table: Table | None, errors: list[ValidationError]) -> dict[str, frozenset[date]]:
+    calendars: dict[str, set[date]] = {}
+    if table is None:
+        return {}
+    for line, values in table.rows:
+        reader = RowReader(table.name, line, values, errors)
+        calendar_id = reader.text("calendar_id")
+        day = reader.date("date")
+        if not reader.ok or calendar_id is None or day is None:
+            continue
+        days = calendars.setdefault(calendar_id, set())
+        if day in days:
+            reader.fail("date", "duplicate holiday")
+            continue
+        days.add(day)
+    return {name: frozenset(days) for name, days in calendars.items()}
 
 
 def _coverage_errors(inputs: Inputs) -> list[ValidationError]:

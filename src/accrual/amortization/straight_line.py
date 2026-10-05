@@ -13,6 +13,7 @@ def zero_coupon_amortization(
     clean_price: Decimal,
     transaction_cost: Decimal,
     end: date,
+    opening_cost: Decimal | None = None,
 ) -> AmortizationResult:
     if bond.coupon_freq != 0:
         raise ValueError("straight-line amortization applies to zero coupon bonds only")
@@ -20,8 +21,9 @@ def zero_coupon_amortization(
         raise ValueError("require dated_date <= settlement < end <= maturity_date")
 
     currency = bond.currency
-    acquisition_cost = RoundingPolicy.round_amount(
-        face * clean_price / 100 + transaction_cost, currency
+    acquisition_cost = (
+        opening_cost if opening_cost is not None
+        else RoundingPolicy.round_amount(face * clean_price / 100 + transaction_cost, currency)
     )
     redemption = RoundingPolicy.round_amount(face * bond.redemption_price / 100, currency)
     total_days = (bond.maturity_date - settlement).days

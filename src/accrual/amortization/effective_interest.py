@@ -21,6 +21,12 @@ _ONE_DAY = timedelta(days=1)
 
 
 @dataclass(frozen=True)
+class OpeningState:
+    dirty: Decimal
+    rate: Decimal
+
+
+@dataclass(frozen=True)
 class _Terms:
     currency: str
     day_count_code: str
@@ -36,13 +42,14 @@ def fixed_rate_amortization(
     clean_price: Decimal,
     transaction_cost: Decimal,
     end: date,
+    opening: OpeningState | None = None,
 ) -> AmortizationResult:
     _require_coupon_bond(bond.coupon_freq)
     _require_range(bond.dated_date, bond.maturity_date, settlement, end)
     rated = [(period, bond.coupon_rate) for period in bond.schedule()]
     return _amortize(
         _terms(bond), face, rated, face * bond.redemption_price / 100,
-        settlement, clean_price, transaction_cost, end, resolve_each_period=False,
+        settlement, clean_price, transaction_cost, end, resolve_each_period=False, opening=opening,
     )
 
 
@@ -54,13 +61,14 @@ def floating_amortization(
     clean_price: Decimal,
     transaction_cost: Decimal,
     end: date,
+    opening: OpeningState | None = None,
 ) -> AmortizationResult:
     _require_coupon_bond(bond.coupon_freq)
     _require_range(bond.dated_date, bond.maturity_date, settlement, end)
     rated = rated_periods(bond, fixings)
     return _amortize(
         _terms(bond), face, rated, face * bond.redemption_price / 100,
-        settlement, clean_price, transaction_cost, end, resolve_each_period=True,
+        settlement, clean_price, transaction_cost, end, resolve_each_period=True, opening=opening,
     )
 
 
@@ -84,6 +92,7 @@ def _amortize(
     transaction_cost: Decimal,
     end: date,
     resolve_each_period: bool,
+    opening: OpeningState | None = None,
 ) -> AmortizationResult:
     currency = terms.currency
     day_count_code = terms.day_count_code
@@ -91,7 +100,10 @@ def _amortize(
     accrued_at_acquisition = RoundingPolicy.round_amount(
         accrued_balance_rated(rated, face, day_count_code, freq, settlement), currency
     )
-    dirty_at_acquisition = face * clean_price / 100 + transaction_cost + accrued_at_acquisition
+    dirty_at_acquisition = (
+        opening.dirty if opening is not None
+        else face * clean_price / 100 + transaction_cost + accrued_at_acquisition
+    )
 
     future = [i for i, (period, _) in enumerate(rated) if period.end > settlement]
     first_fraction = _fraction(day_count_code, freq, settlement, rated[future[0]][0].end, rated[future[0]][0])
@@ -117,7 +129,7 @@ def _amortize(
     rates_by_period: list[Decimal] = []
     for j in range(count):
         if j == 0:
-            rate_j = solve_periodic_eir(flows_from(0), bases[0])
+            rate_j = opening.rate if opening is not None else solve_periodic_eir(flows_from(0), bases[0])
         elif resolve_each_period:
             remeasured = present_value(flows_from(j), rates_by_period[j - 1])
             bases[j] = remeasured
