@@ -7,6 +7,7 @@ from accrual.accrual.floating import Fixing, rated_periods
 from accrual.accrual.pass_through import PoolFactor, period_balances
 from accrual.daycount.base import UnsupportedDayCountError
 from accrual.daycount.types import get_day_count
+from accrual.disposal import Allocation, Sale, allocate_fifo
 from accrual.io.parsing import RowReader, Table, ValidationError, ValidationFailed
 from accrual.models.bond import FixedRateBond, FloatingRateBond, PassThroughBond, TipsBond
 from accrual.models.period import CashFlow, ProjectionVersion
@@ -51,6 +52,7 @@ class Security:
 class Trade:
     trade_id: str
     lot_id: str
+    portfolio_id: str
     security_id: str
     trade_date: date
     settlement_date: date
@@ -69,6 +71,8 @@ class Inputs:
     cpi: dict[str, dict[tuple[int, int], Decimal]]
     pool_factors: dict[str, list[PoolFactor]]
     projections: dict[str, list[ProjectionVersion]]
+    sales: list[Sale] = field(default_factory=list)
+    allocations: dict[str, list[Allocation]] = field(default_factory=dict)
     warnings: list[ValidationError] = field(default_factory=list)
 
 
@@ -80,7 +84,9 @@ def load_inputs(directory: Path, calc_end: date) -> Inputs:
     pool_factors = _load_pool_factors(Table(directory, POOL_FACTOR, _POOL_COLUMNS, errors), securities, errors)
     projections = _load_projections(Table(directory, PROJECTED, _PROJECTED_COLUMNS, errors), securities, errors)
     Table(directory, DAYCOUNT_CODE, _DAYCOUNT_COLUMNS, errors)
-    trades = _load_trades(Table(directory, TRADES, _TRADE_COLUMNS, errors), securities, calc_end, errors)
+    trades, sales = _load_trades(Table(directory, TRADES, _TRADE_COLUMNS, errors), securities, calc_end, errors)
+    allocations, shortfalls = allocate_fifo(trades, sales)
+    errors.extend(ValidationError(TRADES, None, "face_amount", message) for message in shortfalls)
 
     inputs = Inputs(
         calc_end=calc_end,
@@ -90,6 +96,8 @@ def load_inputs(directory: Path, calc_end: date) -> Inputs:
         cpi=cpi,
         pool_factors=pool_factors,
         projections=projections,
+        sales=sales,
+        allocations=allocations,
     )
     errors.extend(_coverage_errors(inputs))
     if errors:
@@ -278,14 +286,16 @@ def _load_projections(
 
 def _load_trades(
     table: Table, securities: dict[str, Security], calc_end: date, errors: list[ValidationError]
-) -> list[Trade]:
+) -> tuple[list[Trade], list[Sale]]:
     trades: list[Trade] = []
+    sales: list[Sale] = []
     seen_ids: set[str] = set()
     seen_lots: set[str] = set()
     for line, values in table.rows:
         reader = RowReader(table.name, line, values, errors)
         trade_id = reader.text("trade_id")
-        lot_id = reader.text("lot_id")
+        lot_id = reader.text("lot_id", required=False)
+        portfolio_id = reader.text("portfolio_id")
         security_id = reader.text("security_id")
         side = reader.enum("side", ("BUY", "SELL"))
         trade_date = reader.date("trade_date")
@@ -298,33 +308,41 @@ def _load_trades(
         price = reader.decimal("clean_price")
         accrued = reader.amount("accrued_interest_paid", currency, required=side == "BUY")
         cost = reader.amount("transaction_cost", currency)
-        if side == "SELL":
-            reader.fail("side", "SELL lots are not supported yet")
+        if side == "BUY" and lot_id is None:
+            reader.fail("lot_id", "BUY lots need a lot_id")
+        if side == "SELL" and lot_id is not None:
+            reader.fail("lot_id", "SELL lots are chosen FIFO; leave lot_id empty")
         if trade_id is not None:
             if trade_id in seen_ids:
                 reader.fail("trade_id", "duplicate trade_id")
             seen_ids.add(trade_id)
-        if lot_id is not None:
+        if side == "BUY" and lot_id is not None:
             if lot_id in seen_lots:
                 reader.fail("lot_id", "duplicate lot_id")
             seen_lots.add(lot_id)
         if trade_date is not None and settlement is not None and trade_date > settlement:
             reader.fail("settlement_date", "settlement date is before trade date")
         if security is not None and settlement is not None:
-            if not security.bond.dated_date <= settlement < calc_end:
-                reader.fail("settlement_date", "settlement must satisfy dated_date <= settlement < calc_end")
-        if not reader.ok or side == "SELL" or None in (
-            trade_id, lot_id, security_id, trade_date, settlement, face, price, cost
-        ):
+            upper_ok = settlement <= calc_end if side == "SELL" else settlement < calc_end
+            if not (security.bond.dated_date <= settlement and upper_ok):
+                reader.fail("settlement_date", "settlement is outside the bond's life or the calc window")
+        if not reader.ok or None in (trade_id, portfolio_id, security_id, trade_date, settlement, face, price, cost):
+            continue
+        if side == "SELL":
+            sales.append(Sale(
+                trade_id=trade_id, portfolio_id=portfolio_id, security_id=security_id,
+                settlement_date=settlement, face=face, clean_price=price, transaction_cost=cost,
+                accrued_received=accrued,
+            ))
             continue
         trades.append(
             Trade(
-                trade_id=trade_id, lot_id=lot_id, security_id=security_id, trade_date=trade_date,
-                settlement_date=settlement, face_amount=face, clean_price=price,
+                trade_id=trade_id, lot_id=lot_id, portfolio_id=portfolio_id, security_id=security_id,
+                trade_date=trade_date, settlement_date=settlement, face_amount=face, clean_price=price,
                 accrued_interest_paid=accrued, transaction_cost=cost,
             )
         )
-    return trades
+    return trades, sales
 
 
 def _coverage_errors(inputs: Inputs) -> list[ValidationError]:

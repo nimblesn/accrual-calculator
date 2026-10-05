@@ -61,19 +61,33 @@ def test_sample_directory_passes_validation() -> None:
     assert len(inputs.trades) == 7
 
 
-def test_sell_row_fails_validation_with_row_number(tmp_path: Path) -> None:
+def test_sell_with_lot_id_fails_validation_with_row_number(tmp_path: Path) -> None:
     directory = tmp_path / "in"
     directory.mkdir()
     for source in SAMPLES.iterdir():
         shutil.copy(source, directory / source.name)
     trades = directory / "trades.csv"
     lines = trades.read_text(encoding="utf-8").splitlines()
-    lines.append("T0008,L0008,P01,SAMPLE0001,SELL,2024-05-20,2024-05-22,300000,100.500,,0")
+    lines.append("T0009,L0001,P01,SAMPLE0001,SELL,2024-05-20,2024-05-22,300000,100.500,,0")
     trades.write_text("\n".join(lines) + "\n", encoding="utf-8")
     with pytest.raises(ValidationFailed) as excinfo:
         load_inputs(directory, CALC_END)
     messages = [str(error) for error in excinfo.value.errors]
-    assert any("trades.csv:9" in message and "SELL" in message for message in messages)
+    assert any("trades.csv:10" in message and "lot_id" in message for message in messages)
+
+
+def test_sell_beyond_holdings_fails_validation(tmp_path: Path) -> None:
+    directory = tmp_path / "in"
+    directory.mkdir()
+    for source in SAMPLES.iterdir():
+        shutil.copy(source, directory / source.name)
+    trades = directory / "trades.csv"
+    lines = trades.read_text(encoding="utf-8").splitlines()
+    lines.append("T0009,,P01,SAMPLE0001,SELL,2024-05-20,2024-05-22,9000000,100.500,,0")
+    trades.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    with pytest.raises(ValidationFailed) as excinfo:
+        load_inputs(directory, CALC_END)
+    assert any("insufficient holdings" in str(error) for error in excinfo.value.errors)
 
 
 def _subset_directory(target: Path) -> Path:
