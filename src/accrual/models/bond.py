@@ -17,6 +17,7 @@ class FixedRateBond:
     coupon_freq: int
     day_count_code: str
     end_of_month: bool
+    redemption_price: Decimal
     last_stub: StubType = StubType.SHORT
 
     def __post_init__(self) -> None:
@@ -26,6 +27,8 @@ class FixedRateBond:
             raise ValueError(f"coupon_rate must be finite and non-negative: {self.coupon_rate}")
         if self.coupon_freq == 0 and self.coupon_rate != 0:
             raise ValueError("zero coupon bond must have coupon_rate 0")
+        if not isinstance(self.redemption_price, Decimal) or not self.redemption_price.is_finite():
+            raise ValueError("redemption_price must be a finite Decimal")
 
     def schedule(self) -> list[CouponPeriod]:
         return generate_coupon_schedule(

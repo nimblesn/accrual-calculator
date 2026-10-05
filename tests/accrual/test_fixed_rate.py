@@ -20,6 +20,7 @@ SAMPLE0001 = FixedRateBond(
     coupon_freq=2,
     day_count_code="30E/360",
     end_of_month=False,
+    redemption_price=Decimal("100"),
 )
 
 SAMPLE0002_ZERO = FixedRateBond(
@@ -33,6 +34,7 @@ SAMPLE0002_ZERO = FixedRateBond(
     coupon_freq=0,
     day_count_code="ACT/365",
     end_of_month=False,
+    redemption_price=Decimal("100"),
 )
 
 SAMPLE0003_KRW = FixedRateBond(
@@ -46,6 +48,7 @@ SAMPLE0003_KRW = FixedRateBond(
     coupon_freq=4,
     day_count_code="ACT/ACT",
     end_of_month=False,
+    redemption_price=Decimal("100"),
 )
 
 JPY_SEMI = FixedRateBond(
@@ -59,6 +62,7 @@ JPY_SEMI = FixedRateBond(
     coupon_freq=2,
     day_count_code="30E/360",
     end_of_month=False,
+    redemption_price=Decimal("100"),
 )
 
 
@@ -128,4 +132,5 @@ def test_coupon_rate_validation() -> None:
             coupon_freq=0,
             day_count_code="ACT/365",
             end_of_month=False,
+            redemption_price=Decimal("100"),
         )
