@@ -356,9 +356,9 @@ def _require_projection(inputs: Inputs, security: Security, trade: Trade, errors
         ))
         return
     last_pay = max(cash.pay_date for v in versions for cash in v.flows)
-    if last_pay < inputs.calc_end:
+    if last_pay < security.bond.maturity_date:
         errors.append(ValidationError(
-            PROJECTED, None, "pay_date", f"{trade.lot_id}: projected cash flows end before calc_end",
+            PROJECTED, None, "pay_date", f"{trade.lot_id}: projected cash flows end before maturity",
         ))
 
 
@@ -367,8 +367,9 @@ def _require_cpi(inputs: Inputs, security: Security, trade: Trade, errors: list[
         errors.append(ValidationError(SECURITY_MASTER, None, "cpi_index_name", f"{security.security_id}: missing"))
         return
     series = inputs.cpi.get(security.cpi_index_name, {})
+    maturity = security.bond.maturity_date
     first = trade.settlement_date.year * 12 + trade.settlement_date.month - 1 - 3
-    last = inputs.calc_end.year * 12 + inputs.calc_end.month - 1 - 2
+    last = maturity.year * 12 + maturity.month - 1 - 2
     missing = [
         f"{total // 12:04d}-{total % 12 + 1:02d}"
         for total in range(first, last + 1)
@@ -376,5 +377,5 @@ def _require_cpi(inputs: Inputs, security: Security, trade: Trade, errors: list[
     ]
     if missing:
         errors.append(ValidationError(
-            CPI_INDEX, None, "month", f"{security.cpi_index_name}: missing CPI months {', '.join(missing)}",
+            CPI_INDEX, None, "month", f"{security.cpi_index_name}: missing CPI months through maturity: {', '.join(missing)}",
         ))

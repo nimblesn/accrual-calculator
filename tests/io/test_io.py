@@ -61,7 +61,7 @@ def test_sample_directory_fails_validation_with_row_numbers() -> None:
         load_inputs(SAMPLES, CALC_END)
     messages = [str(error) for error in excinfo.value.errors]
     assert any("trades.csv:9" in message and "SELL" in message for message in messages)
-    assert any("projected cash flows end before calc_end" in message for message in messages)
+    assert any("projected cash flows end before maturity" in message for message in messages)
 
 
 def _subset_directory(target: Path) -> Path:
