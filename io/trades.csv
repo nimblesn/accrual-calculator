@@ -1,0 +1,2 @@
+trade_id,lot_id,portfolio_id,security_id,side,trade_date,settlement_date,face_amount,clean_price,accrued_interest_paid,transaction_cost
+T0001,L0001,P01,US91282CLN91,BUY,2025-02-03,2025-02-03,500000000,99.898438,6057692.31,0
