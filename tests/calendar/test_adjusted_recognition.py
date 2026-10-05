@@ -17,9 +17,9 @@ def _run(target: Path, convention: str | None) -> dict[str, dict[str, str]]:
     rows = list(csv.DictReader(master.open(encoding="utf-8", newline="")))
     fields = list(rows[0].keys())
     for row in rows:
-        if row["security_id"] == "SAMPLE0003" and convention is not None:
-            row["business_day_conv"] = convention
-            row["calendar_id"] = "KR"
+        if row["security_id"] == "SAMPLE0003":
+            row["business_day_conv"] = convention or ""
+            row["calendar_id"] = "KR" if convention else ""
     with master.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fields, lineterminator="\n")
         writer.writeheader()
