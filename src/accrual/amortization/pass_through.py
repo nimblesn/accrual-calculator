@@ -1,7 +1,8 @@
+from collections.abc import Callable
 from datetime import date, timedelta
 from decimal import Decimal
 
-from accrual.accrual.accrued_interest import accrued_balance_rated, daily_accrual_series
+from accrual.accrual.accrued_interest import DailyAccrual, accrued_balance_rated, daily_accrual_series
 from accrual.accrual.pass_through import PoolFactor, period_balances
 from accrual.amortization.eir_solver import present_value, solve_periodic_eir
 from accrual.daycount.types import get_day_count
@@ -13,6 +14,7 @@ from accrual.schedule.coupon_schedule import CouponPeriod
 
 _ONE_DAY = timedelta(days=1)
 _UNIT_FACE = Decimal(1)
+DailyFn = Callable[[date, date], list[DailyAccrual]]
 
 
 def pass_through_amortization(
@@ -27,18 +29,54 @@ def pass_through_amortization(
 ) -> AmortizationResult:
     if not bond.dated_date <= settlement < end <= bond.maturity_date:
         raise ValueError("require dated_date <= settlement < end <= maturity_date")
-
-    currency = bond.currency
-    day_count = get_day_count(bond.day_count_code)
-    freq = bond.coupon_freq
     rated = period_balances(bond, factors)
-    periods = [period for period, _ in rated]
-    versions = sorted(projections, key=lambda v: v.effective_date)
-
-    accrued_at_acquisition = RoundingPolicy.round_amount(
-        accrued_balance_rated(rated, _UNIT_FACE, bond.day_count_code, freq, settlement), currency
+    accrued0 = RoundingPolicy.round_amount(
+        accrued_balance_rated(rated, _UNIT_FACE, bond.day_count_code, bond.coupon_freq, settlement),
+        bond.currency,
     )
-    dirty_at_acquisition = face_amount * clean_price / 100 + transaction_cost + accrued_at_acquisition
+
+    def daily(start: date, stop: date) -> list[DailyAccrual]:
+        return daily_accrual_series(
+            rated, _UNIT_FACE, bond.currency, bond.day_count_code, bond.coupon_freq, start, stop
+        )
+
+    return projected_cash_amortization(
+        currency=bond.currency,
+        day_count_code=bond.day_count_code,
+        coupon_freq=bond.coupon_freq,
+        periods=[period for period, _ in rated],
+        daily=daily,
+        accrued_at_settlement=accrued0,
+        face_amount=face_amount,
+        clean_price=clean_price,
+        transaction_cost=transaction_cost,
+        projections=projections,
+        settlement=settlement,
+        end=end,
+    )
+
+
+def projected_cash_amortization(
+    *,
+    currency: str,
+    day_count_code: str,
+    coupon_freq: int,
+    periods: list[CouponPeriod],
+    daily: DailyFn,
+    accrued_at_settlement: Decimal,
+    face_amount: Decimal,
+    clean_price: Decimal,
+    transaction_cost: Decimal,
+    projections: list[ProjectionVersion],
+    settlement: date,
+    end: date,
+) -> AmortizationResult:
+    day_count = get_day_count(day_count_code)
+    freq = coupon_freq
+    versions = sorted(projections, key=lambda v: v.effective_date)
+    dirty_at_acquisition = (
+        face_amount * clean_price / 100 + transaction_cost + accrued_at_settlement
+    )
 
     def active_flows(on: date) -> tuple:
         applicable = [v for v in versions if v.effective_date <= on]
@@ -62,10 +100,8 @@ def pass_through_amortization(
         return present_value(discounted(on, active_flows(on)), rate)
 
     rows: list[AmortizationRow] = []
-    for daily in daily_accrual_series(
-        rated, _UNIT_FACE, currency, bond.day_count_code, freq, settlement + _ONE_DAY, end
-    ):
-        on = daily.on
+    for accrual in daily(settlement + _ONE_DAY, end):
+        on = accrual.on
         previous = on - _ONE_DAY
         cash_on = sum(
             (cash.total for cash in active_flows(previous) if cash.pay_date == on), Decimal(0)
@@ -79,11 +115,11 @@ def pass_through_amortization(
         rows.append(
             AmortizationRow(
                 on=on,
-                amortized_cost=RoundingPolicy.round_amount(dirty_now, currency) - daily.accrued_cum,
-                accrued_cum=daily.accrued_cum,
-                accrued_daily=daily.accrued_daily,
+                amortized_cost=RoundingPolicy.round_amount(dirty_now, currency) - accrual.accrued_cum,
+                accrued_cum=accrual.accrued_cum,
+                accrued_daily=accrual.accrued_daily,
                 interest_income=interest_income,
-                amortization=interest_income - daily.accrued_daily,
+                amortization=interest_income - accrual.accrued_daily,
                 eir_periodic=rate,
             )
         )
