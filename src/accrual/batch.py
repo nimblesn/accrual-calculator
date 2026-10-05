@@ -12,6 +12,7 @@ from accrual.amortization.effective_interest import OpeningState, fixed_rate_amo
 from accrual.amortization.pass_through import pass_through_amortization
 from accrual.amortization.straight_line import zero_coupon_amortization
 from accrual.amortization.tips import tips_amortization
+from accrual.calendar import cash_dates
 from accrual.disposal import Allocation
 from accrual.io.loaders import TRADES, Inputs, Security, Trade, load_inputs
 from accrual.io.parsing import ValidationError, ValidationFailed
@@ -46,11 +47,17 @@ class BatchReport:
     warnings: list[ValidationError]
 
 
+CASH_SCHEDULE_COLUMNS = (
+    "security_id", "contract_pay_date", "cash_pay_date", "business_day_convention", "calendar_id",
+)
+
+
 def run_batch(input_dir: Path, output: Path, calc_end: date) -> BatchReport:
     inputs = load_inputs(input_dir, calc_end)
     warnings: list[ValidationError] = []
     lots = 0
     rows = 0
+    _write_cash_schedule(inputs, output.parent / "cash_schedule.csv")
     with output.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.writer(handle)
         writer.writerow(OUTPUT_COLUMNS)
@@ -131,6 +138,32 @@ def _disposal(
         derecognized_amortized_cost=derecognized,
         realized_gain_loss=clean - cost - derecognized,
     )
+
+
+def _write_cash_schedule(inputs: Inputs, path: Path) -> None:
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(CASH_SCHEDULE_COLUMNS)
+        for security in inputs.securities.values():
+            contract = _contract_pay_dates(inputs, security)
+            for day, cash_day in cash_dates(security, inputs.holidays, contract):
+                writer.writerow([
+                    security.security_id,
+                    day.isoformat(),
+                    cash_day.isoformat(),
+                    security.business_day_convention or "",
+                    security.calendar_id or "",
+                ])
+
+
+def _contract_pay_dates(inputs: Inputs, security: Security) -> list[date]:
+    if security.bond_type in ("MBS", "ABS"):
+        versions = inputs.projections.get(security.security_id, [])
+        if not versions:
+            return []
+        latest = max(versions, key=lambda version: version.version)
+        return sorted({cash.pay_date for cash in latest.flows})
+    return [period.end for period in security.bond.schedule()]
 
 
 def _start(trade: Trade) -> date:
