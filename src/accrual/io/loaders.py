@@ -13,6 +13,7 @@ from accrual.models.bond import FixedRateBond, FloatingRateBond, PassThroughBond
 from accrual.models.period import CashFlow, ProjectionVersion
 
 BOND_TYPES = ("FIXED", "FLOATING", "MBS", "ABS", "TIPS")
+BUSINESS_DAY_CONVENTIONS = ("FOLLOWING", "MODIFIED_FOLLOWING", "PRECEDING")
 SECURITY_MASTER = "security_master.csv"
 TRADES = "trades.csv"
 FLOATING_INDEX = "floating_rate_index.csv"
@@ -50,6 +51,8 @@ class Security:
     currency: str
     bond: FixedRateBond | FloatingRateBond | PassThroughBond | TipsBond
     cpi_index_name: str | None
+    business_day_convention: str | None = None
+    calendar_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -104,6 +107,12 @@ def load_inputs(directory: Path, calc_end: date) -> Inputs:
     trades, sales = _load_trades(Table(directory, TRADES, _TRADE_COLUMNS, errors), securities, calc_end, errors)
     openings, as_of = _load_openings(_optional(directory, OPENING_BALANCE, _OPENING_COLUMNS, errors), errors)
     holidays = _load_holidays(_optional(directory, HOLIDAY_CALENDAR, _HOLIDAY_COLUMNS, errors), errors)
+    for security in securities.values():
+        if security.calendar_id is not None and security.calendar_id not in holidays:
+            errors.append(ValidationError(
+                SECURITY_MASTER, None, "calendar_id",
+                f"{security.security_id}: calendar {security.calendar_id!r} is not in {HOLIDAY_CALENDAR}",
+            ))
     trades, sales = _apply_openings(trades, sales, openings, as_of, securities, errors)
     allocations, shortfalls = allocate_fifo(trades, sales)
     errors.extend(ValidationError(TRADES, None, "face_amount", message) for message in shortfalls)
@@ -143,6 +152,10 @@ def _load_securities(table: Table, errors: list[ValidationError]) -> dict[str, S
         day_count = reader.text("day_count_code")
         eom = reader.yes_no("eom_flag")
         redemption = reader.decimal("redemption_price_pct")
+        convention = reader.enum("business_day_conv", BUSINESS_DAY_CONVENTIONS, required=False)
+        calendar_id = reader.text("calendar_id", required=False)
+        if convention is not None and calendar_id is None:
+            reader.fail("calendar_id", "a business day convention needs a calendar_id")
         if day_count is not None:
             try:
                 get_day_count(day_count)
@@ -161,7 +174,8 @@ def _load_securities(table: Table, errors: list[ValidationError]) -> dict[str, S
         )
         if bond is not None:
             securities[security_id] = Security(
-                security_id, bond_type, currency, bond, values.get("cpi_index_name") or None
+                security_id, bond_type, currency, bond, values.get("cpi_index_name") or None,
+                convention, calendar_id,
             )
     return securities
 
