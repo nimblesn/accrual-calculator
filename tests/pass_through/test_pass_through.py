@@ -1,10 +1,10 @@
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 
 from accrual.accrual.pass_through import PoolFactor, pass_through_accrued_on, period_balances
 from accrual.amortization.eir_solver import present_value
 from accrual.daycount.types import get_day_count
-from accrual.amortization.pass_through import pass_through_amortization
+from accrual.amortization.pass_through import CATCH_UP, PROSPECTIVE, pass_through_amortization
 from accrual.models.bond import PassThroughBond
 from accrual.models.period import AccrualPeriod
 from accrual.models.period import CashFlow, ProjectionVersion
@@ -113,7 +113,7 @@ def test_projection_change_is_caught_up_on_its_effective_date() -> None:
     revised = ProjectionVersion(version=2, effective_date=date(2024, 7, 1), flows=_flows(Decimal("6000")))
     result = pass_through_amortization(
         DEAL, DEAL_FACTORS, [base, revised],
-        date(2024, 1, 1), Decimal("1000000"), Decimal("100"), Decimal("0"), date(2025, 12, 31),
+        date(2024, 1, 1), Decimal("1000000"), Decimal("100"), Decimal("0"), date(2025, 12, 31), CATCH_UP,
     )
     rows = {row.on: row for row in result.rows}
     jump = rows[date(2024, 7, 1)].amortization - rows[date(2024, 6, 30)].amortization
@@ -127,7 +127,7 @@ def test_catch_up_equals_present_value_difference_at_old_rate() -> None:
     result = pass_through_amortization(
         DEAL, DEAL_FACTORS,
         [ProjectionVersion(version=1, effective_date=date(2024, 1, 1), flows=base_flows), ProjectionVersion(version=2, effective_date=date(2024, 7, 1), flows=revised_flows)],
-        date(2024, 1, 1), Decimal("1000000"), Decimal("100"), Decimal("0"), date(2025, 12, 31),
+        date(2024, 1, 1), Decimal("1000000"), Decimal("100"), Decimal("0"), date(2025, 12, 31), CATCH_UP,
     )
     rate = result.eir_periodic
     on = date(2024, 7, 1)
@@ -146,3 +146,66 @@ def test_catch_up_equals_present_value_difference_at_old_rate() -> None:
     rows = {row.on: row for row in result.rows}
     normal_day = rows[date(2024, 6, 30)].amortization
     assert abs(rows[on].amortization - normal_day - catch_up) < Decimal("1")
+
+
+# PROSPECTIVE (spec 9.5). One bullet flow per version so the EIR has a closed form:
+# bought at par (dirty 1,000,000, no accrued on 2024-01-01), one payment on 2025-01-01 (12 periods).
+# Base: 1,000,000 x 1.01^12 = 1,126,825.03 => periodic EIR 1%.
+# Revised from 2024-07-01: carrying amount 1,000,000 x 1.01^6 = 1,061,520.15 compounds at 2% for the
+# remaining 6 periods to 1,061,520.1506 x 1.02^6 = 1,195,444.10 => new periodic EIR 2%.
+# (Closed-form compound interest, worked on a calculator.)
+BULLET_PAY = date(2025, 1, 1)
+CHANGE = date(2024, 7, 1)
+BULLET_BASE = ProjectionVersion(1, date(2024, 1, 1), (CashFlow(BULLET_PAY, Decimal("1000000"), Decimal("126825.03")),))
+BULLET_REVISED = ProjectionVersion(2, CHANGE, (CashFlow(BULLET_PAY, Decimal("1000000"), Decimal("195444.10")),))
+RATE_TOLERANCE = Decimal("1E-9")  # rounding the bullets to cents moves the rates by up to ~1.3e-10
+
+
+def _bullet(versions: list[ProjectionVersion], method: str = PROSPECTIVE):
+    return pass_through_amortization(
+        DEAL, DEAL_FACTORS, versions, date(2024, 1, 1), Decimal("1000000"), Decimal("100"), Decimal("0"),
+        BULLET_PAY, method,
+    )
+
+
+def test_prospective_resolves_eir_on_effective_date() -> None:
+    rows = _bullet([BULLET_BASE, BULLET_REVISED]).rows
+    before = {row.eir_periodic for row in rows if row.on < CHANGE}
+    after = {row.eir_periodic for row in rows if row.on >= CHANGE}
+    assert len(before) == len(after) == 1
+    assert abs(before.pop() - Decimal("0.01")) < RATE_TOLERANCE
+    assert abs(after.pop() - Decimal("0.02")) < RATE_TOLERANCE
+
+
+def test_prospective_keeps_carrying_amount_on_effective_date() -> None:
+    unchanged = {row.on: row for row in _bullet([BULLET_BASE]).rows}
+    prospective = {row.on: row for row in _bullet([BULLET_BASE, BULLET_REVISED]).rows}
+    catch_up = {row.on: row for row in _bullet([BULLET_BASE, BULLET_REVISED], CATCH_UP).rows}
+    # Spec 9.5: PROSPECTIVE keeps the carrying amount; CATCH_UP revalues it at the old EIR.
+    assert prospective[CHANGE].amortized_cost == unchanged[CHANGE].amortized_cost
+    assert prospective[CHANGE - timedelta(days=1)].amortized_cost == unchanged[CHANGE - timedelta(days=1)].amortized_cost
+    assert catch_up[CHANGE].amortized_cost != unchanged[CHANGE].amortized_cost
+
+
+def test_prospective_income_telescopes_to_revised_cash() -> None:
+    result = _bullet([BULLET_BASE, BULLET_REVISED])
+    # Total income = cash received (revised bullet) - acquisition cost, with no one-off catch-up.
+    assert sum(row.interest_income for row in result.rows) == Decimal("1195444.10") - Decimal("1000000")
+    assert result.rows[-1].amortized_cost == Decimal("1000000.00")
+    assert abs(result.eir_periodic - Decimal("0.02")) < RATE_TOLERANCE
+
+
+def test_prospective_is_the_default() -> None:
+    explicit = _bullet([BULLET_BASE, BULLET_REVISED], PROSPECTIVE)
+    default = pass_through_amortization(
+        DEAL, DEAL_FACTORS, [BULLET_BASE, BULLET_REVISED], date(2024, 1, 1), Decimal("1000000"), Decimal("100"),
+        Decimal("0"), BULLET_PAY,
+    )
+    assert default == explicit
+
+
+def test_unknown_change_method_rejected() -> None:
+    import pytest
+
+    with pytest.raises(ValueError):
+        _bullet([BULLET_BASE], "RETROSPECTIVE")

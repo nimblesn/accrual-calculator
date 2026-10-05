@@ -310,6 +310,9 @@ Dirty AC(t) = Dirty AC(t0) × (1 + i)^Δf
 - **Fixed**: 취득 시점 1회 EIR 산출 후 고정
 - **Floating**: 금리 리셋 시점마다 미래 현금흐름을 갱신해 EIR을 재산출한다. 이때 장부가는 유지(전진적 처리) [가정, 확인필요]
 - **MBS/ABS**: 현금흐름 추정 변경 시 처리 방식은 설정값으로 두되, 기본값은 **`PROSPECTIVE`** (EIR 재산출, 장부가는 유지) [확정]. `CATCH_UP`(기존 EIR로 재계산한 장부가와의 차이를 즉시 손익 처리)은 설정값으로 계속 지원한다.
+  - 설정 위치: 실행 파라미터 `projection_change` (10.1). 실행 단위로 모든 MBS/ABS 로트에 적용 [확정]
+  - PROSPECTIVE: 새 버전의 effective_date에, 직전 버전·직전 EIR로 평가한 Dirty 장부가를 목표로 새 버전의 잔여 현금흐름에 대해 EIR을 재산출한다. 그날 이후 새 EIR을 적용하고, 장부가는 연속된다.
+  - 취득일(또는 이월 기준일) 이전에 유효해진 버전은 재산출 대상이 아니다. 취득 EIR(또는 이월 EIR)에 이미 반영된 것으로 본다.
 - **TIPS**: 실질(real) EIR을 산출하여 물가연동 원금에 적용한다 [확정]
 - **Zero coupon** (쿠폰율 0인 Fixed): 유효이자율법을 적용하지 않고 **정액법**으로 상각한다.
   - 경과이자 = 0 (이표 이자 없음)
@@ -343,7 +346,7 @@ Dirty AC(t) = Dirty AC(t0) × (1 + i)^Δf
 | holiday_calendar.csv | 휴일 캘린더 | 휴일 조정 적용 시 [확인필요] |
 | daycount_code.csv | Day Count 코드 ↔ 명칭 매핑 | 항상 (5.1 결번 포함) |
 
-계산 실행 파라미터(파일 아님): `calc_start_date`, `calc_end_date`, 입력 파일 경로
+계산 실행 파라미터(파일 아님): `calc_start_date`, `calc_end_date`, 입력 파일 경로, `projection_change` (`PROSPECTIVE`(기본) / `CATCH_UP`, CLI `--projection-change`) [확정]
 
 ### 10.2 파일 포맷 공통 규칙 (CSV 사용은 10.0에서 확정. 아래 세부 규칙은 1차안)
 

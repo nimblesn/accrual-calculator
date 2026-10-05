@@ -14,6 +14,9 @@ from accrual.rounding import RoundingPolicy
 from accrual.schedule.coupon_schedule import CouponPeriod
 
 _ONE_DAY = timedelta(days=1)
+PROSPECTIVE = "PROSPECTIVE"
+CATCH_UP = "CATCH_UP"
+PROJECTION_CHANGE_METHODS = (PROSPECTIVE, CATCH_UP)
 _UNIT_FACE = Decimal(1)
 DailyFn = Callable[[date, date], list[DailyAccrual]]
 
@@ -33,7 +36,9 @@ def pass_through_amortization(
     clean_price: Decimal,
     transaction_cost: Decimal,
     end: date,
+    change_method: str = PROSPECTIVE,
 ) -> AmortizationResult:
+    """MBS/ABS: a new projection version is handled by change_method (spec 9.5, default PROSPECTIVE)."""
     if not bond.dated_date <= settlement < end <= bond.maturity_date:
         raise ValueError("require dated_date <= settlement < end <= maturity_date")
     rated = period_balances(bond, factors)
@@ -60,6 +65,7 @@ def pass_through_amortization(
         projections=projections,
         settlement=settlement,
         end=end,
+        change_method=change_method,
     )
 
 
@@ -78,7 +84,17 @@ def projected_cash_amortization(
     settlement: date,
     end: date,
     opening: OpeningState | None = None,
+    change_method: str = CATCH_UP,
 ) -> AmortizationResult:
+    """Daily amortized cost from projected cash flows.
+
+    When a later projection version takes effect:
+    - CATCH_UP keeps the EIR and revalues the remaining flows at it, so the carrying amount jumps.
+    - PROSPECTIVE keeps the carrying amount: on the effective date a new EIR is solved so that the new
+      version's remaining flows are worth what the old version's flows were worth at the old EIR.
+    """
+    if change_method not in PROJECTION_CHANGE_METHODS:
+        raise ValueError(f"unknown projection change method: {change_method}")
     day_count = get_day_count(day_count_code)
     freq = coupon_freq
     versions = sorted(projections, key=lambda v: v.effective_date)
@@ -107,11 +123,26 @@ def projected_cash_amortization(
     else:
         rate = solve_periodic_eir(discounted(settlement, active_flows(settlement)), dirty_at_acquisition)
 
+    # (effective date, rate) in date order; the first entry covers everything up to the first change.
+    rates: list[tuple[date, Decimal]] = [(settlement, rate)]
+    if change_method == PROSPECTIVE:
+        for effective in sorted({v.effective_date for v in versions if settlement < v.effective_date <= end}):
+            previous_rate = rates[-1][1]
+            carrying = present_value(discounted(effective, active_flows(effective - _ONE_DAY)), previous_rate)
+            remaining = discounted(effective, active_flows(effective))
+            if not remaining:
+                raise ValueError(f"projection effective {effective} has no cash flows after that date")
+            rates.append((effective, solve_periodic_eir(remaining, carrying)))
+
+    def rate_on(on: date) -> Decimal:
+        applicable = [r for since, r in rates if since <= on]
+        return applicable[-1] if applicable else rates[0][1]
+
     dirty_cache: dict[date, Decimal] = {}
 
     def dirty_at(on: date) -> Decimal:
         if on not in dirty_cache:
-            dirty_cache[on] = present_value(discounted(on, active_flows(on)), rate)
+            dirty_cache[on] = present_value(discounted(on, active_flows(on)), rate_on(on))
         return dirty_cache[on]
 
     last_cash_date = max(cash.pay_date for version in versions for cash in version.flows)
@@ -144,13 +175,14 @@ def projected_cash_amortization(
                 accrued_daily=accrual.accrued_daily,
                 interest_income=interest_income,
                 amortization=interest_income - accrual.accrued_daily,
-                eir_periodic=rate,
+                eir_periodic=rate_on(on),
             )
         )
 
+    current = rate_on(rows[-1].on) if rows else rate
     return AmortizationResult(
-        eir_periodic=rate,
-        eir_annual=(1 + rate) ** freq - 1,
+        eir_periodic=current,
+        eir_annual=(1 + current) ** freq - 1,
         rows=rows,
     )
 

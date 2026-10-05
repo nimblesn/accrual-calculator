@@ -3,6 +3,7 @@ import sys
 from datetime import date
 from pathlib import Path
 
+from accrual.amortization.pass_through import PROJECTION_CHANGE_METHODS, PROSPECTIVE
 from accrual.batch import run_batch
 from accrual.io.parsing import ValidationFailed
 
@@ -13,12 +14,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--calc-end", required=True, type=date.fromisoformat)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument(
+        "--projection-change", choices=PROJECTION_CHANGE_METHODS, default=PROSPECTIVE,
+        help="MBS/ABS projection version change: PROSPECTIVE re-solves the EIR (default), CATCH_UP revalues",
+    )
+    parser.add_argument(
         "--snapshot-dates", default="", type=_parse_dates,
         help="comma-separated YYYY-MM-DD dates to write to snapshot.csv beside the output",
     )
     args = parser.parse_args(argv)
     try:
-        report = run_batch(args.input_dir, args.output, args.calc_end, args.snapshot_dates)
+        report = run_batch(args.input_dir, args.output, args.calc_end, args.snapshot_dates, args.projection_change)
     except ValidationFailed as failure:
         for error in failure.errors:
             print(f"error: {error}", file=sys.stderr)

@@ -11,7 +11,7 @@ from accrual.accrual.floating import floating_accrued_on, rated_periods
 from accrual.accrual.pass_through import PoolFactor, factor_on, pass_through_accrued_on
 from accrual.accrual.tips import RefCpi, inflation_compensation_on, interpolated_ref_cpi, tips_accrued_on
 from accrual.amortization.effective_interest import OpeningState, fixed_rate_amortization, floating_amortization
-from accrual.amortization.pass_through import pass_through_amortization
+from accrual.amortization.pass_through import PROJECTION_CHANGE_METHODS, PROSPECTIVE, pass_through_amortization
 from accrual.amortization.straight_line import zero_coupon_amortization
 from accrual.amortization.tips import tips_amortization
 from accrual.calendar import adjust_payment_date, cash_dates
@@ -62,7 +62,10 @@ def run_batch(
     output: Path,
     calc_end: date,
     snapshot_dates: tuple[date, ...] = (),
+    projection_change: str = PROSPECTIVE,
 ) -> BatchReport:
+    if projection_change not in PROJECTION_CHANGE_METHODS:
+        raise ValueError(f"projection_change must be one of {', '.join(PROJECTION_CHANGE_METHODS)}")
     inputs = load_inputs(input_dir, calc_end)
     warnings: list[ValidationError] = []
     lots = 0
@@ -88,7 +91,7 @@ def run_batch(
                 warnings.append(warning)
             if trade.opening is not None:
                 warnings.extend(_opening_warnings(inputs, security, trade))
-            lot_rows = _lot_rows(inputs, security, trade, warnings)
+            lot_rows = _lot_rows(inputs, security, trade, warnings, projection_change)
             inflation = _inflation_series(inputs, security, trade, [row for row, _ in lot_rows])
             for row, disposal in lot_rows:
                 line = _output_row(trade, security, row, disposal, inflation)
@@ -112,6 +115,7 @@ def _lot_rows(
     security: Security,
     trade: Trade,
     warnings: list[ValidationError],
+    projection_change: str,
 ) -> list[tuple[AmortizationRow, Disposal | None]]:
     calc_end = inputs.calc_end
     sold: list[Allocation] = [
@@ -128,7 +132,7 @@ def _lot_rows(
     for index, face in enumerate(faces):
         allocation = sold[index] if index < len(sold) else None
         upper = allocation.sale.settlement_date if allocation else calc_end
-        result = _engine(inputs, security, trade, face, upper)
+        result = _engine(inputs, security, trade, face, upper, projection_change)
         for row in result.rows:
             if row.on <= lower:
                 continue
@@ -200,7 +204,9 @@ def _start(trade: Trade) -> date:
     return trade.opening.as_of if trade.opening is not None else trade.settlement_date
 
 
-def _engine(inputs: Inputs, security: Security, trade: Trade, face: Decimal, end: date) -> AmortizationResult:
+def _engine(
+    inputs: Inputs, security: Security, trade: Trade, face: Decimal, end: date, projection_change: str
+) -> AmortizationResult:
     bond = security.bond
     price = trade.clean_price
     settlement = _start(trade)
@@ -234,7 +240,7 @@ def _engine(inputs: Inputs, security: Security, trade: Trade, face: Decimal, end
         ]
         return pass_through_amortization(
             scaled_bond, inputs.pool_factors.get(security.security_id, []), projections,
-            settlement, face, price, cost, end,
+            settlement, face, price, cost, end, projection_change,
         )
     return tips_amortization(bond, face, _cpi_series(inputs, security), settlement, price, cost, end, pay_date=pay)
 
