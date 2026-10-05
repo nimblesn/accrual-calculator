@@ -131,6 +131,7 @@ def tips_projections(
     par: Decimal,
     ref_cpi: RefCpi,
     settlement: date,
+    pay_date: Callable[[date], date] = lambda day: day,
 ) -> list[ProjectionVersion]:
     versions: list[ProjectionVersion] = []
     reset = date(settlement.year, settlement.month, 1)
@@ -147,7 +148,7 @@ def tips_projections(
                 adjusted, bond.real_coupon_rate, bond.day_count_code, bond.coupon_freq, period, period.end
             )
             principal = redemption if period.end == bond.maturity_date else Decimal(0)
-            flows.append(CashFlow(period.end, principal, coupon))
+            flows.append(CashFlow(pay_date(period.end), principal, coupon))
         versions.append(ProjectionVersion(version=len(versions) + 1, effective_date=reset, flows=tuple(flows)))
         reset = _next_month_start(reset)
     return versions

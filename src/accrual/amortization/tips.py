@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from datetime import date
 from decimal import Decimal
 
@@ -22,6 +23,7 @@ def tips_amortization(
     clean_price: Decimal,
     transaction_cost: Decimal,
     end: date,
+    pay_date: Callable[[date], date] = lambda day: day,
 ) -> AmortizationResult:
     if not bond.dated_date <= settlement < end <= bond.maturity_date:
         raise ValueError("require dated_date <= settlement < end <= maturity_date")
@@ -29,7 +31,7 @@ def tips_amortization(
     ref_cpi: RefCpi = lambda on: interpolated_ref_cpi(monthly_cpi, on)
     accrued_at_settlement = tips_accrued_on(bond, par, ref_cpi, settlement)
     adjusted_at_settlement = par * index_ratio(ref_cpi(settlement), bond.base_ref_cpi)
-    projections = tips_projections(bond, par, ref_cpi, settlement)
+    projections = tips_projections(bond, par, ref_cpi, settlement, pay_date)
 
     def daily(start: date, stop: date):
         return tips_daily_accrual(bond, par, ref_cpi, start, stop)

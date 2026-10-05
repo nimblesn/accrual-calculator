@@ -1,4 +1,5 @@
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import date, timedelta
 from decimal import Decimal
 
@@ -15,6 +16,12 @@ from accrual.schedule.coupon_schedule import CouponPeriod
 _ONE_DAY = timedelta(days=1)
 _UNIT_FACE = Decimal(1)
 DailyFn = Callable[[date, date], list[DailyAccrual]]
+
+
+@dataclass(frozen=True)
+class OpeningState:
+    dirty: Decimal
+    rate: Decimal
 
 
 def pass_through_amortization(
@@ -70,12 +77,14 @@ def projected_cash_amortization(
     projections: list[ProjectionVersion],
     settlement: date,
     end: date,
+    opening: OpeningState | None = None,
 ) -> AmortizationResult:
     day_count = get_day_count(day_count_code)
     freq = coupon_freq
     versions = sorted(projections, key=lambda v: v.effective_date)
     dirty_at_acquisition = (
-        face_amount * clean_price / 100 + transaction_cost + accrued_at_settlement
+        opening.dirty if opening is not None
+        else face_amount * clean_price / 100 + transaction_cost + accrued_at_settlement
     )
 
     def active_flows(on: date) -> tuple:
@@ -84,20 +93,28 @@ def projected_cash_amortization(
             raise ValueError(f"no projected cash flows effective on or before {on}")
         return applicable[-1].flows
 
-    def discounted(on: date, flows: tuple) -> list[tuple[Decimal, Decimal]]:
-        period = _period_at(periods, on)
-        accrual_period = AccrualPeriod(period.start, period.end, freq)
-        out = []
-        for cash in flows:
-            if cash.pay_date > on:
-                years = day_count.year_fraction(on, cash.pay_date, accrual_period)
-                out.append((cash.total, years * freq))
-        return out
+    axis = _TimeAxis(periods, day_count, freq)
 
-    rate = solve_periodic_eir(discounted(settlement, active_flows(settlement)), dirty_at_acquisition)
+    def discounted(on: date, flows: tuple) -> list[tuple[Decimal, Decimal]]:
+        return [
+            (cash.total, axis.tau(cash.pay_date) - axis.tau(on))
+            for cash in flows
+            if cash.pay_date > on
+        ]
+
+    if opening is not None:
+        rate = opening.rate
+    else:
+        rate = solve_periodic_eir(discounted(settlement, active_flows(settlement)), dirty_at_acquisition)
+
+    dirty_cache: dict[date, Decimal] = {}
 
     def dirty_at(on: date) -> Decimal:
-        return present_value(discounted(on, active_flows(on)), rate)
+        if on not in dirty_cache:
+            dirty_cache[on] = present_value(discounted(on, active_flows(on)), rate)
+        return dirty_cache[on]
+
+    last_cash_date = max(cash.pay_date for version in versions for cash in version.flows)
 
     rows: list[AmortizationRow] = []
     for accrual in daily(settlement + _ONE_DAY, end):
@@ -112,10 +129,17 @@ def projected_cash_amortization(
             - RoundingPolicy.round_amount(dirty_at(previous), currency)
             + RoundingPolicy.round_amount(cash_on, currency)
         )
+        if on == last_cash_date:
+            principal_due = sum(
+                (cash.principal for cash in active_flows(previous) if cash.pay_date == on), Decimal(0)
+            )
+            book = RoundingPolicy.round_amount(principal_due, currency)
+        else:
+            book = RoundingPolicy.round_amount(dirty_now, currency) - accrual.accrued_cum
         rows.append(
             AmortizationRow(
                 on=on,
-                amortized_cost=RoundingPolicy.round_amount(dirty_now, currency) - accrual.accrued_cum,
+                amortized_cost=book,
                 accrued_cum=accrual.accrued_cum,
                 accrued_daily=accrual.accrued_daily,
                 interest_income=interest_income,
@@ -131,8 +155,31 @@ def projected_cash_amortization(
     )
 
 
-def _period_at(periods: list[CouponPeriod], on: date) -> CouponPeriod:
-    for period in periods:
-        if period.start <= on < period.end:
-            return period
-    return periods[-1]
+class _TimeAxis:
+    def __init__(self, periods: list[CouponPeriod], day_count, freq: int) -> None:
+        self._periods = periods
+        self._day_count = day_count
+        self._freq = freq
+        self._cache: dict[date, Decimal] = {}
+
+    def tau(self, on: date) -> Decimal:
+        if on not in self._cache:
+            self._cache[on] = self._compute(on)
+        return self._cache[on]
+
+    def _compute(self, on: date) -> Decimal:
+        for index, period in enumerate(self._periods):
+            if period.start <= on < period.end:
+                return Decimal(index) + _ratio(period, period.start, on, self._day_count, self._freq)
+        last = self._periods[-1]
+        if on >= last.end:
+            extra = _ratio(last, last.end, on, self._day_count, self._freq)
+            return Decimal(len(self._periods) - 1) + Decimal(1) + extra
+        return Decimal(0)
+
+
+def _ratio(period: CouponPeriod, low: date, high: date, day_count, freq: int) -> Decimal:
+    accrual_period = AccrualPeriod(period.start, period.end, freq)
+    numerator = day_count.year_fraction(low, high, accrual_period)
+    denominator = day_count.year_fraction(period.start, period.end, accrual_period)
+    return numerator / denominator

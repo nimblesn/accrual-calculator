@@ -2,6 +2,7 @@ import csv
 from dataclasses import dataclass, replace
 from datetime import date
 from decimal import Decimal
+from collections.abc import Callable
 from pathlib import Path
 
 from accrual.accrual.accrued_interest import accrued_interest_on
@@ -12,7 +13,7 @@ from accrual.amortization.effective_interest import OpeningState, fixed_rate_amo
 from accrual.amortization.pass_through import pass_through_amortization
 from accrual.amortization.straight_line import zero_coupon_amortization
 from accrual.amortization.tips import tips_amortization
-from accrual.calendar import cash_dates
+from accrual.calendar import adjust_payment_date, cash_dates
 from accrual.disposal import Allocation
 from accrual.io.loaders import TRADES, Inputs, Security, Trade, load_inputs
 from accrual.io.parsing import ValidationError, ValidationFailed
@@ -177,33 +178,48 @@ def _engine(inputs: Inputs, security: Security, trade: Trade, face: Decimal, end
     fraction = face / trade.face_amount
     cost = trade.transaction_cost * fraction
     opening = trade.opening
+    pay = _pay_date_fn(inputs, security)
     if security.bond_type == "FIXED" and bond.coupon_freq == 0:
         basis = None
         if opening is not None:
             basis = RoundingPolicy.round_amount(opening.amortized_cost * fraction, security.currency)
-        return zero_coupon_amortization(bond, face, settlement, price, cost, end, opening_cost=basis)
+        return zero_coupon_amortization(
+            bond, face, settlement, price, cost, end, opening_cost=basis, pay_date=pay,
+        )
     state = None
     if opening is not None:
         dirty = opening.amortized_cost + _accrued_at_settlement(inputs, security, trade, settlement)
         state = OpeningState(dirty=dirty * fraction, rate=opening.eir_periodic)
     if security.bond_type == "FIXED":
-        return fixed_rate_amortization(bond, face, settlement, price, cost, end, opening=state)
+        return fixed_rate_amortization(bond, face, settlement, price, cost, end, opening=state, pay_date=pay)
     if security.bond_type == "FLOATING":
-        return floating_amortization(bond, face, inputs.fixings, settlement, price, cost, end, opening=state)
+        return floating_amortization(
+            bond, face, inputs.fixings, settlement, price, cost, end, opening=state, pay_date=pay,
+        )
     if security.bond_type in ("MBS", "ABS"):
         scaled_bond = replace(bond, original_face=bond.original_face * fraction)
-        projections = [_scaled(version, fraction) for version in inputs.projections.get(security.security_id, [])]
+        projections = [
+            _scaled(version, fraction, pay) for version in inputs.projections.get(security.security_id, [])
+        ]
         return pass_through_amortization(
             scaled_bond, inputs.pool_factors.get(security.security_id, []), projections,
             settlement, face, price, cost, end,
         )
-    return tips_amortization(bond, face, _cpi_series(inputs, security), settlement, price, cost, end)
+    return tips_amortization(bond, face, _cpi_series(inputs, security), settlement, price, cost, end, pay_date=pay)
 
 
-def _scaled(version: ProjectionVersion, fraction: Decimal) -> ProjectionVersion:
+def _pay_date_fn(inputs: Inputs, security: Security) -> Callable[[date], date]:
+    if security.business_day_convention is None:
+        return lambda day: day
+    calendar = inputs.holidays[security.calendar_id]
+    convention = security.business_day_convention
+    return lambda day: adjust_payment_date(day, convention, calendar)
+
+
+def _scaled(version: ProjectionVersion, fraction: Decimal, pay: Callable[[date], date]) -> ProjectionVersion:
     flows = tuple(
         CashFlow(
-            cash.pay_date,
+            pay(cash.pay_date),
             cash.principal * fraction,
             cash.interest * fraction,
         )

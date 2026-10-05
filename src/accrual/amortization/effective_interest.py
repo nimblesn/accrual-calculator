@@ -1,38 +1,21 @@
-from dataclasses import dataclass
-from datetime import date, timedelta
+from collections.abc import Callable
+from datetime import date
 from decimal import Decimal
 
-from accrual.accrual.accrued_interest import (
-    RatedPeriod,
-    accrued_balance_rated,
-    cumulative_rated,
-    daily_accrual_series,
-)
-from accrual.accrual.floating import Fixing, rated_periods
-from accrual.amortization.eir_solver import present_value, solve_periodic_eir
-from accrual.daycount.types import get_day_count
+from accrual.accrual.accrued_interest import accrued_balance_rated, cumulative_rated, daily_accrual_series
+from accrual.accrual.floating import Fixing, index_rate_on, rated_periods
+from accrual.amortization.pass_through import OpeningState, projected_cash_amortization
 from accrual.models.bond import FixedRateBond, FloatingRateBond
-from accrual.models.period import AccrualPeriod
-from accrual.models.result import AmortizationResult, AmortizationRow
+from accrual.models.period import CashFlow, ProjectionVersion
+from accrual.models.result import AmortizationResult
 from accrual.rounding import RoundingPolicy
 from accrual.schedule.coupon_schedule import CouponPeriod
 
-_ONE_DAY = timedelta(days=1)
+PayDate = Callable[[date], date]
 
 
-@dataclass(frozen=True)
-class OpeningState:
-    dirty: Decimal
-    rate: Decimal
-
-
-@dataclass(frozen=True)
-class _Terms:
-    currency: str
-    day_count_code: str
-    coupon_freq: int
-    dated: date
-    maturity: date
+def _identity(day: date) -> date:
+    return day
 
 
 def fixed_rate_amortization(
@@ -43,14 +26,15 @@ def fixed_rate_amortization(
     transaction_cost: Decimal,
     end: date,
     opening: OpeningState | None = None,
+    pay_date: PayDate = _identity,
 ) -> AmortizationResult:
     _require_coupon_bond(bond.coupon_freq)
     _require_range(bond.dated_date, bond.maturity_date, settlement, end)
     rated = [(period, bond.coupon_rate) for period in bond.schedule()]
-    return _amortize(
-        _terms(bond), face, rated, face * bond.redemption_price / 100,
-        settlement, clean_price, transaction_cost, end, resolve_each_period=False, opening=opening,
-    )
+    redemption = face * bond.redemption_price / 100
+    flows = _flows(bond, face, rated, redemption, pay_date, after=None)
+    versions = [ProjectionVersion(1, settlement, tuple(flows))]
+    return _run(bond, face, rated, versions, settlement, clean_price, transaction_cost, end, opening)
 
 
 def floating_amortization(
@@ -62,154 +46,80 @@ def floating_amortization(
     transaction_cost: Decimal,
     end: date,
     opening: OpeningState | None = None,
+    pay_date: PayDate = _identity,
 ) -> AmortizationResult:
     _require_coupon_bond(bond.coupon_freq)
     _require_range(bond.dated_date, bond.maturity_date, settlement, end)
     rated = rated_periods(bond, fixings)
-    return _amortize(
-        _terms(bond), face, rated, face * bond.redemption_price / 100,
-        settlement, clean_price, transaction_cost, end, resolve_each_period=True, opening=opening,
-    )
+    periods = [period for period, _ in rated]
+    redemption = face * bond.redemption_price / 100
+    versions: list[ProjectionVersion] = []
+    for number, reset in enumerate((period.start for period in periods), start=1):
+        known = [
+            (period, bond.coupon_rate(index_rate_on(bond, fixings, min(period.start, reset))))
+            for period in periods
+        ]
+        flows = _flows(bond, face, known, redemption, pay_date, after=reset)
+        versions.append(ProjectionVersion(number, reset, tuple(flows)))
+    return _run(bond, face, rated, versions, settlement, clean_price, transaction_cost, end, opening)
 
 
-def _terms(bond: FixedRateBond | FloatingRateBond) -> _Terms:
-    return _Terms(
-        currency=bond.currency,
-        day_count_code=bond.day_count_code,
-        coupon_freq=bond.coupon_freq,
-        dated=bond.dated_date,
-        maturity=bond.maturity_date,
-    )
-
-
-def _amortize(
-    terms: _Terms,
+def _flows(
+    bond,
     face: Decimal,
-    rated: list[RatedPeriod],
+    rated: list[tuple[CouponPeriod, Decimal]],
     redemption: Decimal,
+    pay_date: PayDate,
+    after: date | None,
+) -> list[CashFlow]:
+    flows: list[CashFlow] = []
+    last = len(rated) - 1
+    for index, (period, rate) in enumerate(rated):
+        pay = pay_date(period.end)
+        if after is not None and pay <= after:
+            continue
+        coupon = cumulative_rated(face, rate, bond.day_count_code, bond.coupon_freq, period, period.end)
+        principal = redemption if index == last else Decimal(0)
+        flows.append(CashFlow(pay, principal, coupon))
+    return flows
+
+
+def _run(
+    bond,
+    face: Decimal,
+    rated: list[tuple[CouponPeriod, Decimal]],
+    versions: list[ProjectionVersion],
     settlement: date,
     clean_price: Decimal,
     transaction_cost: Decimal,
     end: date,
-    resolve_each_period: bool,
-    opening: OpeningState | None = None,
+    opening: OpeningState | None,
 ) -> AmortizationResult:
-    currency = terms.currency
-    day_count_code = terms.day_count_code
-    freq = terms.coupon_freq
-    accrued_at_acquisition = RoundingPolicy.round_amount(
+    currency = bond.currency
+    day_count_code = bond.day_count_code
+    freq = bond.coupon_freq
+    accrued0 = RoundingPolicy.round_amount(
         accrued_balance_rated(rated, face, day_count_code, freq, settlement), currency
     )
-    dirty_at_acquisition = (
-        opening.dirty if opening is not None
-        else face * clean_price / 100 + transaction_cost + accrued_at_acquisition
+
+    def daily(start: date, stop: date):
+        return daily_accrual_series(rated, face, currency, day_count_code, freq, start, stop)
+
+    return projected_cash_amortization(
+        currency=currency,
+        day_count_code=day_count_code,
+        coupon_freq=freq,
+        periods=[period for period, _ in rated],
+        daily=daily,
+        accrued_at_settlement=accrued0,
+        face_amount=face,
+        clean_price=clean_price,
+        transaction_cost=transaction_cost,
+        projections=versions,
+        settlement=settlement,
+        end=end,
+        opening=opening,
     )
-
-    future = [i for i, (period, _) in enumerate(rated) if period.end > settlement]
-    first_fraction = _fraction(day_count_code, freq, settlement, rated[future[0]][0].end, rated[future[0]][0])
-    coupons = [
-        cumulative_rated(face, rate, day_count_code, freq, period, period.end)
-        for period, rate in (rated[i] for i in future)
-    ]
-    count = len(future)
-
-    def flows_from(j: int) -> list[tuple[Decimal, Decimal]]:
-        rate = rated[future[j]][1]
-        flows = []
-        for m in range(j, count):
-            period = rated[future[m]][0]
-            amount = cumulative_rated(face, rate, day_count_code, freq, period, period.end)
-            if m == count - 1:
-                amount += redemption
-            fraction = first_fraction if j == 0 else Decimal(1)
-            flows.append((amount, fraction + (m - j)))
-        return flows
-
-    bases = [dirty_at_acquisition]
-    rates_by_period: list[Decimal] = []
-    for j in range(count):
-        if j == 0:
-            rate_j = opening.rate if opening is not None else solve_periodic_eir(flows_from(0), bases[0])
-        elif resolve_each_period:
-            remeasured = present_value(flows_from(j), rates_by_period[j - 1])
-            bases[j] = remeasured
-            rate_j = solve_periodic_eir(flows_from(j), remeasured)
-        else:
-            rate_j = rates_by_period[0]
-        rates_by_period.append(rate_j)
-        if j < count - 1:
-            growth = (1 + rate_j) ** (first_fraction if j == 0 else Decimal(1))
-            bases.append(bases[j] * growth - coupons[j])
-
-    def dirty_at(on: date) -> Decimal:
-        for j, index in enumerate(future):
-            period = rated[index][0]
-            if period.start <= on < period.end:
-                if j == 0:
-                    base = dirty_at_acquisition
-                    fraction = _fraction(day_count_code, freq, settlement, on, period)
-                else:
-                    base = bases[j]
-                    fraction = _fraction(day_count_code, freq, period.start, on, period)
-                return base * (1 + rates_by_period[j]) ** fraction
-        return Decimal(0)
-
-    cash_on: dict[date, Decimal] = {rated[index][0].end: coupons[j] for j, index in enumerate(future)}
-    cash_on[terms.maturity] = cash_on.get(terms.maturity, Decimal(0)) + redemption
-
-    rows: list[AmortizationRow] = []
-    for daily in daily_accrual_series(
-        rated, face, currency, day_count_code, freq, settlement + _ONE_DAY, end
-    ):
-        on = daily.on
-        dirty_now = dirty_at(on)
-        dirty_before = dirty_at(on - _ONE_DAY)
-        interest_income = (
-            RoundingPolicy.round_amount(dirty_now, currency)
-            - RoundingPolicy.round_amount(dirty_before, currency)
-            + RoundingPolicy.round_amount(cash_on.get(on, Decimal(0)), currency)
-        )
-        if on == terms.maturity:
-            amortized_cost = RoundingPolicy.round_amount(redemption, currency)
-        else:
-            amortized_cost = RoundingPolicy.round_amount(dirty_now, currency) - daily.accrued_cum
-        income_index = _income_period_index(future, rated, on)
-        rows.append(
-            AmortizationRow(
-                on=on,
-                amortized_cost=amortized_cost,
-                accrued_cum=daily.accrued_cum,
-                accrued_daily=daily.accrued_daily,
-                interest_income=interest_income,
-                amortization=interest_income - daily.accrued_daily,
-                eir_periodic=rates_by_period[income_index],
-            )
-        )
-
-    initial_rate = rates_by_period[0]
-    return AmortizationResult(
-        eir_periodic=initial_rate,
-        eir_annual=(1 + initial_rate) ** freq - 1,
-        rows=rows,
-    )
-
-
-def _income_period_index(future: list[int], rated: list[RatedPeriod], on: date) -> int:
-    for j, index in enumerate(future):
-        period = rated[index][0]
-        if period.start < on <= period.end:
-            return j
-    return len(future) - 1
-
-
-def _fraction(
-    day_count_code: str, freq: int, start: date, on: date, period: CouponPeriod
-) -> Decimal:
-    day_count = get_day_count(day_count_code)
-    accrual_period = AccrualPeriod(period.start, period.end, freq)
-    numerator = day_count.year_fraction(start, on, accrual_period)
-    denominator = day_count.year_fraction(period.start, period.end, accrual_period)
-    return numerator / denominator
 
 
 def _require_coupon_bond(freq: int) -> None:

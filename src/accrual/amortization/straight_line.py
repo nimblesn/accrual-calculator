@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from datetime import date, timedelta
 from decimal import Decimal
 
@@ -14,6 +15,7 @@ def zero_coupon_amortization(
     transaction_cost: Decimal,
     end: date,
     opening_cost: Decimal | None = None,
+    pay_date: Callable[[date], date] = lambda day: day,
 ) -> AmortizationResult:
     if bond.coupon_freq != 0:
         raise ValueError("straight-line amortization applies to zero coupon bonds only")
@@ -26,7 +28,7 @@ def zero_coupon_amortization(
         else RoundingPolicy.round_amount(face * clean_price / 100 + transaction_cost, currency)
     )
     redemption = RoundingPolicy.round_amount(face * bond.redemption_price / 100, currency)
-    total_days = (bond.maturity_date - settlement).days
+    total_days = (pay_date(bond.maturity_date) - settlement).days
     gain = redemption - acquisition_cost
 
     def cumulative(on: date) -> Decimal:

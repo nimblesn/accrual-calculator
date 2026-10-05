@@ -19,6 +19,16 @@ class Fixing:
     rate: Decimal
 
 
+def index_rate_on(bond: FloatingRateBond, fixings: list[Fixing], on: date) -> Decimal:
+    applicable = sorted(
+        (f for f in fixings if f.index_name == bond.index_name and f.reset_date <= on),
+        key=lambda f: f.reset_date,
+    )
+    if not applicable:
+        raise ValueError(f"no {bond.index_name} fixing on or before {on}")
+    return applicable[-1].rate
+
+
 def rated_periods(bond: FloatingRateBond, fixings: list[Fixing]) -> list[RatedPeriod]:
     relevant = sorted(
         (f for f in fixings if f.index_name == bond.index_name), key=lambda f: f.reset_date
