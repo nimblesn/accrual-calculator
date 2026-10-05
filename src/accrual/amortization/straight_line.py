@@ -43,6 +43,7 @@ def zero_coupon_amortization(
                 accrued_daily=Decimal(0),
                 interest_income=amortization,
                 amortization=amortization,
+                eir_periodic=None,
             )
         )
         day += timedelta(days=1)

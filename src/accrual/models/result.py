@@ -11,6 +11,7 @@ class AmortizationRow:
     accrued_daily: Decimal
     interest_income: Decimal
     amortization: Decimal
+    eir_periodic: Decimal | None
 
 
 @dataclass(frozen=True)
