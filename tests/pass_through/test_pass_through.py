@@ -92,7 +92,7 @@ def _flows(interest: Decimal) -> tuple[CashFlow, ...]:
 
 def test_eir_discounts_projected_cash_flows_to_acquisition_price() -> None:
     result = pass_through_amortization(
-        DEAL, DEAL_FACTORS, [ProjectionVersion(date(2024, 1, 1), _flows(Decimal("5000")))],
+        DEAL, DEAL_FACTORS, [ProjectionVersion(version=1, effective_date=date(2024, 1, 1), flows=_flows(Decimal("5000")))],
         date(2024, 1, 1), Decimal("1000000"), Decimal("100"), Decimal("0"), date(2025, 12, 31),
     )
     assert result.eir_periodic is not None
@@ -101,7 +101,7 @@ def test_eir_discounts_projected_cash_flows_to_acquisition_price() -> None:
 
 def test_income_telescopes_to_cash_less_acquisition_cost() -> None:
     result = pass_through_amortization(
-        DEAL, DEAL_FACTORS, [ProjectionVersion(date(2024, 1, 1), _flows(Decimal("5000")))],
+        DEAL, DEAL_FACTORS, [ProjectionVersion(version=1, effective_date=date(2024, 1, 1), flows=_flows(Decimal("5000")))],
         date(2024, 1, 1), Decimal("1000000"), Decimal("100"), Decimal("0"), date(2025, 12, 31),
     )
     total_cash = sum((cash.total for cash in _flows(Decimal("5000"))), Decimal(0))
@@ -109,8 +109,8 @@ def test_income_telescopes_to_cash_less_acquisition_cost() -> None:
 
 
 def test_projection_change_is_caught_up_on_its_effective_date() -> None:
-    base = ProjectionVersion(date(2024, 1, 1), _flows(Decimal("5000")))
-    revised = ProjectionVersion(date(2024, 7, 1), _flows(Decimal("6000")))
+    base = ProjectionVersion(version=1, effective_date=date(2024, 1, 1), flows=_flows(Decimal("5000")))
+    revised = ProjectionVersion(version=2, effective_date=date(2024, 7, 1), flows=_flows(Decimal("6000")))
     result = pass_through_amortization(
         DEAL, DEAL_FACTORS, [base, revised],
         date(2024, 1, 1), Decimal("1000000"), Decimal("100"), Decimal("0"), date(2025, 12, 31),
@@ -126,7 +126,7 @@ def test_catch_up_equals_present_value_difference_at_old_rate() -> None:
     revised_flows = _flows(Decimal("6000"))
     result = pass_through_amortization(
         DEAL, DEAL_FACTORS,
-        [ProjectionVersion(date(2024, 1, 1), base_flows), ProjectionVersion(date(2024, 7, 1), revised_flows)],
+        [ProjectionVersion(version=1, effective_date=date(2024, 1, 1), flows=base_flows), ProjectionVersion(version=2, effective_date=date(2024, 7, 1), flows=revised_flows)],
         date(2024, 1, 1), Decimal("1000000"), Decimal("100"), Decimal("0"), date(2025, 12, 31),
     )
     rate = result.eir_periodic

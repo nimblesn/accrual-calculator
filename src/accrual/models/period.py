@@ -29,5 +29,6 @@ class CashFlow:
 
 @dataclass(frozen=True)
 class ProjectionVersion:
+    version: int
     effective_date: date
     flows: tuple[CashFlow, ...]

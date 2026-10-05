@@ -127,3 +127,39 @@ class PassThroughBond:
             end_of_month=self.end_of_month,
             last_stub=self.last_stub,
         )
+
+
+@dataclass(frozen=True)
+class TipsBond:
+    security_id: str
+    currency: str
+    issue_date: date
+    dated_date: date
+    maturity_date: date
+    first_coupon_date: date | None
+    real_coupon_rate: Decimal
+    coupon_freq: int
+    day_count_code: str
+    end_of_month: bool
+    base_ref_cpi: Decimal
+    deflation_floor: bool
+    last_stub: StubType = StubType.SHORT
+
+    def __post_init__(self) -> None:
+        if not self.real_coupon_rate.is_finite() or self.real_coupon_rate < 0:
+            raise ValueError("real_coupon_rate must be finite and non-negative")
+        if self.coupon_freq < 1:
+            raise ValueError("TIPS must have a positive coupon frequency")
+        if not self.base_ref_cpi.is_finite() or self.base_ref_cpi <= 0:
+            raise ValueError("base_ref_cpi must be positive")
+
+    def schedule(self) -> list[CouponPeriod]:
+        return generate_coupon_schedule(
+            issue_date=self.issue_date,
+            dated_date=self.dated_date,
+            maturity_date=self.maturity_date,
+            first_coupon_date=self.first_coupon_date,
+            coupon_freq=self.coupon_freq,
+            end_of_month=self.end_of_month,
+            last_stub=self.last_stub,
+        )
