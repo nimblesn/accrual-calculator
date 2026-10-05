@@ -3,6 +3,7 @@ from dataclasses import dataclass, replace
 from datetime import date
 from decimal import Decimal
 from collections.abc import Callable
+from contextlib import ExitStack
 from pathlib import Path
 
 from accrual.accrual.accrued_interest import accrued_interest_on
@@ -46,6 +47,9 @@ class BatchReport:
     lots: int
     rows: int
     warnings: list[ValidationError]
+    snapshot: Path | None = None
+    snapshot_rows: int = 0
+    missing_snapshot_dates: tuple[date, ...] = ()
 
 
 CASH_SCHEDULE_COLUMNS = (
@@ -53,15 +57,30 @@ CASH_SCHEDULE_COLUMNS = (
 )
 
 
-def run_batch(input_dir: Path, output: Path, calc_end: date) -> BatchReport:
+def run_batch(
+    input_dir: Path,
+    output: Path,
+    calc_end: date,
+    snapshot_dates: tuple[date, ...] = (),
+) -> BatchReport:
     inputs = load_inputs(input_dir, calc_end)
     warnings: list[ValidationError] = []
     lots = 0
     rows = 0
+    snapshot_path = output.parent / "snapshot.csv" if snapshot_dates else None
+    wanted = set(snapshot_dates)
+    seen_dates: set[date] = set()
+    snapshot_rows = 0
     _write_cash_schedule(inputs, output.parent / "cash_schedule.csv")
-    with output.open("w", encoding="utf-8", newline="") as handle:
+    with ExitStack() as stack:
+        handle = stack.enter_context(output.open("w", encoding="utf-8", newline=""))
         writer = csv.writer(handle)
         writer.writerow(OUTPUT_COLUMNS)
+        snapshot_writer = None
+        if snapshot_path is not None:
+            snapshot_handle = stack.enter_context(snapshot_path.open("w", encoding="utf-8", newline=""))
+            snapshot_writer = csv.writer(snapshot_handle)
+            snapshot_writer.writerow(OUTPUT_COLUMNS)
         for trade in inputs.trades:
             security = inputs.securities[trade.security_id]
             warning = _accrued_warning(inputs, security, trade)
@@ -72,10 +91,20 @@ def run_batch(input_dir: Path, output: Path, calc_end: date) -> BatchReport:
             lot_rows = _lot_rows(inputs, security, trade, warnings)
             inflation = _inflation_series(inputs, security, trade, [row for row, _ in lot_rows])
             for row, disposal in lot_rows:
-                writer.writerow(_output_row(trade, security, row, disposal, inflation))
+                line = _output_row(trade, security, row, disposal, inflation)
+                writer.writerow(line)
+                if row.on in wanted:
+                    seen_dates.add(row.on)
+                    if snapshot_writer is not None:
+                        snapshot_writer.writerow(line)
+                        snapshot_rows += 1
             lots += 1
             rows += len(lot_rows)
-    return BatchReport(output=output, lots=lots, rows=rows, warnings=warnings)
+    missing = tuple(sorted(wanted - seen_dates))
+    return BatchReport(
+        output=output, lots=lots, rows=rows, warnings=warnings,
+        snapshot=snapshot_path, snapshot_rows=snapshot_rows, missing_snapshot_dates=missing,
+    )
 
 
 def _lot_rows(
