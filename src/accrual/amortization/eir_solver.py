@@ -18,11 +18,11 @@ def solve_periodic_eir(flows: Sequence[tuple[Decimal, Decimal]], target: Decimal
         return _bisect(flows, target)
 
 
-def _present_value(flows: Sequence[tuple[Decimal, Decimal]], rate: Decimal) -> Decimal:
+def present_value(flows: Sequence[tuple[Decimal, Decimal]], rate: Decimal) -> Decimal:
     return sum((amount * (1 + rate) ** (-periods) for amount, periods in flows), Decimal(0))
 
 
-def _present_value_slope(flows: Sequence[tuple[Decimal, Decimal]], rate: Decimal) -> Decimal:
+def present_value_slope(flows: Sequence[tuple[Decimal, Decimal]], rate: Decimal) -> Decimal:
     return sum(
         (-periods * amount * (1 + rate) ** (-periods - 1) for amount, periods in flows),
         Decimal(0),
@@ -32,8 +32,8 @@ def _present_value_slope(flows: Sequence[tuple[Decimal, Decimal]], rate: Decimal
 def _newton(flows: Sequence[tuple[Decimal, Decimal]], target: Decimal) -> Decimal | None:
     rate = Decimal("0.01")
     for _ in range(_MAX_NEWTON_STEPS):
-        error = _present_value(flows, rate) - target
-        slope = _present_value_slope(flows, rate)
+        error = present_value(flows, rate) - target
+        slope = present_value_slope(flows, rate)
         if slope == 0:
             return None
         candidate = rate - error / slope
@@ -47,13 +47,13 @@ def _newton(flows: Sequence[tuple[Decimal, Decimal]], target: Decimal) -> Decima
 
 def _bisect(flows: Sequence[tuple[Decimal, Decimal]], target: Decimal) -> Decimal:
     lower, upper = _BISECTION_LOWER, _BISECTION_UPPER
-    lower_error = _present_value(flows, lower) - target
-    upper_error = _present_value(flows, upper) - target
+    lower_error = present_value(flows, lower) - target
+    upper_error = present_value(flows, upper) - target
     if lower_error * upper_error > 0:
         raise ValueError("EIR root is not bracketed")
     while upper - lower > _TOLERANCE:
         middle = (lower + upper) / 2
-        middle_error = _present_value(flows, middle) - target
+        middle_error = present_value(flows, middle) - target
         if middle_error * lower_error > 0:
             lower, lower_error = middle, middle_error
         else:

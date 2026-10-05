@@ -44,14 +44,16 @@ def test_discount_purchase_amortization_sums_to_gain() -> None:
     assert sum(row.amortization for row in result.rows) == Decimal("20000.00")
 
 
-def test_eir_is_recomputed_at_each_reset() -> None:
+def test_reset_adjusts_carrying_amount_through_amortization() -> None:
     result = floating_amortization(
         SAMPLE0004, Decimal("1000000"), FIXINGS, date(2024, 1, 10), Decimal("99"), Decimal("0"), date(2024, 10, 10)
     )
-    first_period = {row.eir_periodic for row in result.rows if row.on <= date(2024, 4, 10)}
-    second_period = {row.eir_periodic for row in result.rows if date(2024, 4, 10) < row.on <= date(2024, 7, 10)}
-    assert len(first_period) == 1 and len(second_period) == 1
-    assert first_period != second_period
+    rows = {row.on: row for row in result.rows}
+    reset_day = rows[date(2024, 4, 10)].amortization
+    neighbour = rows[date(2024, 4, 9)].amortization
+    assert abs(reset_day - neighbour) > Decimal("100")
+    rates = {row.eir_periodic for row in result.rows}
+    assert max(rates) - min(rates) < Decimal("1E-9")
 
 
 def test_constant_index_keeps_eir_constant_across_resets() -> None:

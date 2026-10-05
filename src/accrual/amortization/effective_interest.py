@@ -9,7 +9,7 @@ from accrual.accrual.accrued_interest import (
     daily_accrual_series,
 )
 from accrual.accrual.floating import Fixing, rated_periods
-from accrual.amortization.eir_solver import solve_periodic_eir
+from accrual.amortization.eir_solver import present_value, solve_periodic_eir
 from accrual.daycount.types import get_day_count
 from accrual.models.bond import FixedRateBond, FloatingRateBond
 from accrual.models.period import AccrualPeriod
@@ -116,8 +116,12 @@ def _amortize(
     bases = [dirty_at_acquisition]
     rates_by_period: list[Decimal] = []
     for j in range(count):
-        if j == 0 or resolve_each_period:
-            rate_j = solve_periodic_eir(flows_from(j), bases[j])
+        if j == 0:
+            rate_j = solve_periodic_eir(flows_from(0), bases[0])
+        elif resolve_each_period:
+            remeasured = present_value(flows_from(j), rates_by_period[j - 1])
+            bases[j] = remeasured
+            rate_j = solve_periodic_eir(flows_from(j), remeasured)
         else:
             rate_j = rates_by_period[0]
         rates_by_period.append(rate_j)
