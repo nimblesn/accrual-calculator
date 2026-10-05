@@ -26,7 +26,7 @@ _CONVENTIONS: dict[DayCountType, DayCountConvention] = {
     DayCountType.ACT_360: c.Actual360(),
     DayCountType.ACT_AFB: c.ActualAfb(),
     DayCountType.ACT_TSY: c.ActualTsy(),
-    DayCountType.ACT_ACT: c.ActualActIsda(),
+    DayCountType.ACT_ACT: c.ActualActIcma(),
     DayCountType.ACT_366: c.Actual366(),
 }
 

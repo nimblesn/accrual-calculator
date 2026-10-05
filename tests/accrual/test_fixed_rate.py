@@ -70,8 +70,8 @@ def test_accrued_matches_trade_sample_t0002() -> None:
     assert accrued_interest_on(SAMPLE0001, Decimal("500000"), date(2024, 3, 12)) == Decimal("3364.58")
 
 
-def test_accrued_matches_trade_sample_t0004_isda() -> None:
-    assert accrued_interest_on(SAMPLE0003_KRW, Decimal("500000000"), date(2024, 2, 16)) == Decimal("245901.64")
+def test_accrued_matches_trade_sample_t0004_icma() -> None:
+    assert accrued_interest_on(SAMPLE0003_KRW, Decimal("500000000"), date(2024, 2, 16)) == Decimal("250000.00")
 
 
 def test_accrued_is_zero_on_dated_date_and_coupon_date() -> None:

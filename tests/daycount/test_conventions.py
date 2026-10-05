@@ -7,7 +7,7 @@ from accrual.daycount.conventions import (
     Actual360,
     Actual365Fixed,
     Actual366,
-    ActualActIsda,
+    ActualActIcma,
     ActualAfb,
     ActualTsy,
     NoLeapDay365,
@@ -102,24 +102,27 @@ def test_act_tsy_uses_quasi_coupon_period() -> None:
     )
 
 
-def test_act_act_isda_splits_at_year_boundary() -> None:
+def test_act_act_icma_full_period_is_one_over_freq() -> None:
+    period = AccrualPeriod(date(2024, 1, 15), date(2024, 7, 15), 2)
     assert_fraction(
-        ActualActIsda().year_fraction(date(2023, 12, 31), date(2024, 1, 1), ANY_PERIOD),
-        Decimal(1) / Decimal(365),
+        ActualActIcma().year_fraction(date(2024, 1, 15), date(2024, 7, 15), period),
+        Decimal(1) / Decimal(2),
     )
 
 
-def test_act_act_isda_multi_year() -> None:
+def test_act_act_icma_partial_period() -> None:
+    period = AccrualPeriod(date(2024, 1, 15), date(2024, 7, 15), 2)
     assert_fraction(
-        ActualActIsda().year_fraction(date(2023, 7, 1), date(2025, 1, 1), ANY_PERIOD),
-        Decimal(184) / Decimal(365) + Decimal(1),
+        ActualActIcma().year_fraction(date(2024, 1, 15), date(2024, 3, 15), period),
+        Decimal(60) / Decimal(364),
     )
 
 
-def test_act_act_isda_leap_stub_uses_366() -> None:
+def test_act_act_icma_quarterly_stub() -> None:
+    period = AccrualPeriod(date(2024, 2, 10), date(2024, 5, 10), 4)
     assert_fraction(
-        ActualActIsda().year_fraction(date(2024, 2, 28), date(2024, 3, 1), ANY_PERIOD),
-        Decimal(2) / Decimal(366),
+        ActualActIcma().year_fraction(date(2024, 2, 10), date(2024, 2, 16), period),
+        Decimal(6) / Decimal(360),
     )
 
 
@@ -132,7 +135,7 @@ def test_no_leap_day_full_leap_year_is_one() -> None:
 
 @pytest.mark.parametrize(
     "convention",
-    [Thirty360BondBasis(), Actual365Fixed(), ActualAfb(), ActualActIsda(), NoLeapDay365()],
+    [Thirty360BondBasis(), Actual365Fixed(), ActualAfb(), ActualActIcma(),NoLeapDay365()],
 )
 def test_same_start_and_end_is_zero(convention) -> None:
     assert convention.year_fraction(date(2024, 5, 5), date(2024, 5, 5), ANY_PERIOD) == 0
@@ -140,7 +143,7 @@ def test_same_start_and_end_is_zero(convention) -> None:
 
 @pytest.mark.parametrize(
     "convention",
-    [Thirty360BondBasis(), Actual365Fixed(), ActualAfb(), ActualActIsda(), ActualTsy()],
+    [Thirty360BondBasis(), Actual365Fixed(), ActualAfb(), ActualActIcma(),ActualTsy()],
 )
 def test_reversed_interval_raises(convention) -> None:
     with pytest.raises(ValueError):

@@ -110,18 +110,12 @@ class ActualTsy(DayCountConvention):
         return ratio(self.day_count(start, end), period_days * period.coupon_freq)
 
 
-class ActualActIsda(DayCountConvention):
+class ActualActIcma(DayCountConvention):
     def day_count(self, start: date, end: date) -> int:
         validate_interval(start, end)
         return (end - start).days
 
     def year_fraction(self, start: date, end: date, period: AccrualPeriod) -> Decimal:
         validate_interval(start, end)
-        total = Decimal(0)
-        for year in range(start.year, end.year + 1):
-            segment_start = max(start, date(year, 1, 1))
-            segment_end = min(end, date(year + 1, 1, 1))
-            if segment_start < segment_end:
-                denominator = 366 if _is_leap_year(year) else 365
-                total += ratio((segment_end - segment_start).days, denominator)
-        return total
+        period_days = (period.end - period.start).days
+        return ratio(self.day_count(start, end), period.coupon_freq * period_days)
