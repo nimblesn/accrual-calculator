@@ -8,7 +8,7 @@ from pathlib import Path
 
 from accrual.accrual.accrued_interest import accrued_interest_on
 from accrual.accrual.floating import floating_accrued_on, rated_periods
-from accrual.accrual.pass_through import pass_through_accrued_on
+from accrual.accrual.pass_through import PoolFactor, factor_on, pass_through_accrued_on
 from accrual.accrual.tips import RefCpi, inflation_compensation_on, interpolated_ref_cpi, tips_accrued_on
 from accrual.amortization.effective_interest import OpeningState, fixed_rate_amortization, floating_amortization
 from accrual.amortization.pass_through import pass_through_amortization
@@ -227,8 +227,10 @@ def _engine(inputs: Inputs, security: Security, trade: Trade, face: Decimal, end
         )
     if security.bond_type in ("MBS", "ABS"):
         scaled_bond = replace(bond, original_face=bond.original_face * fraction)
+        factors = inputs.pool_factors.get(security.security_id, [])
         projections = [
-            _scaled(version, fraction, pay) for version in inputs.projections.get(security.security_id, [])
+            _scaled(version, _projection_ratio(version, factors, trade, face, fraction), pay)
+            for version in inputs.projections.get(security.security_id, [])
         ]
         return pass_through_amortization(
             scaled_bond, inputs.pool_factors.get(security.security_id, []), projections,
@@ -243,6 +245,24 @@ def _pay_date_fn(inputs: Inputs, security: Security) -> Callable[[date], date]:
     calendar = inputs.holidays[security.calendar_id]
     convention = security.business_day_convention
     return lambda day: adjust_payment_date(day, convention, calendar)
+
+
+def _projection_ratio(
+    version: ProjectionVersion, factors: list[PoolFactor], trade: Trade, face: Decimal, fraction: Decimal
+) -> Decimal:
+    """Share of a projection version that belongs to this lot.
+
+    Without basis_face the flows are taken to be on the lot's own trade face. With it, the lot's face
+    (a balance at settlement) is restated to the version's effective date by factor ratio and divided
+    by basis_face, so several lots can share one security-level projection (mbs-cashflow spec 6.3).
+    """
+    if version.basis_face is None:
+        return fraction
+    at_effective = factor_on(factors, version.effective_date)
+    at_settlement = factor_on(factors, trade.settlement_date)
+    if at_effective is None or at_settlement is None or at_settlement.factor == 0:
+        raise ValueError(f"{trade.lot_id}: no pool factor to restate the lot to basis_face")
+    return face * at_effective.factor / at_settlement.factor / version.basis_face
 
 
 def _scaled(version: ProjectionVersion, fraction: Decimal, pay: Callable[[date], date]) -> ProjectionVersion:

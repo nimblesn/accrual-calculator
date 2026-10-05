@@ -32,3 +32,5 @@ class ProjectionVersion:
     version: int
     effective_date: date
     flows: tuple[CashFlow, ...]
+    # Holding face (balance at effective_date) the flows were projected on; None = the lot's own trade face.
+    basis_face: Decimal | None = None

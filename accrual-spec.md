@@ -415,7 +415,7 @@ Dirty AC(t) = Dirty AC(t0) × (1 + i)^Δf
 | floating_rate_index.csv | index_name, reset_date, rate_pct | 계산 기간 내 모든 리셋일 필요 |
 | cpi_index.csv | cpi_index_name, month (YYYY-MM), cpi_value | 6.5장 Ref CPI 산출용 (필요한 월은 계산 월 기준 M-3 ~ M-2) |
 | pool_factor.csv | security_id, effective_date, factor | factor는 소수 8자리 등 원본 자릿수 그대로 |
-| projected_cashflows.csv | security_id, pay_date, principal, interest | 취득 이후 현금흐름. 추정 버전 구분이 필요하면 `version` 추가 [확인필요] |
+| projected_cashflows.csv | security_id, version, effective_date, pay_date, principal, interest, basis_face(선택) | 취득 이후 현금흐름. `basis_face`는 해당 버전의 기준 보유 액면(effective_date 시점 잔액). 값이 있으면 로트 비율 = `잔여 로트 액면 × factor(effective_date) / factor(settlement_date) / basis_face`, 비어 있으면 기존대로 `잔여 로트 액면 / trade.face_amount` [확정: mbs-cashflow spec 6.3 (a)] |
 | holiday_calendar.csv | calendar_id, date | |
 | daycount_code.csv | code_no, code_name | 5.1 순번/코드 매핑 |
 

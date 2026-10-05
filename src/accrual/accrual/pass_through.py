@@ -20,6 +20,12 @@ class PoolFactor:
     factor: Decimal
 
 
+def factor_on(factors: list[PoolFactor], day: date) -> PoolFactor | None:
+    """Latest factor effective on or before day."""
+    applicable = [f for f in factors if f.effective_date <= day]
+    return max(applicable, key=lambda f: f.effective_date) if applicable else None
+
+
 def period_balances(bond: PassThroughBond, factors: list[PoolFactor]) -> list[RatedPeriod]:
     ordered = sorted(factors, key=lambda f: f.effective_date)
     rated: list[RatedPeriod] = []

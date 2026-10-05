@@ -4,7 +4,7 @@ from decimal import Decimal
 from pathlib import Path
 
 from accrual.accrual.floating import Fixing, rated_periods
-from accrual.accrual.pass_through import PoolFactor, period_balances
+from accrual.accrual.pass_through import PoolFactor, factor_on, period_balances
 from accrual.daycount.base import UnsupportedDayCountError
 from accrual.daycount.types import get_day_count
 from accrual.disposal import Allocation, Sale, allocate_fifo
@@ -290,6 +290,7 @@ def _load_projections(
     table: Table, securities: dict[str, Security], errors: list[ValidationError]
 ) -> dict[str, list[ProjectionVersion]]:
     grouped: dict[str, dict[int, tuple[date, list[CashFlow]]]] = {}
+    bases: dict[tuple[str, int], Decimal | None] = {}
     for line, values in table.rows:
         reader = RowReader(table.name, line, values, errors)
         security_id = reader.text("security_id")
@@ -300,6 +301,9 @@ def _load_projections(
         currency = security.currency if security else "USD"
         principal = reader.amount("principal", currency)
         interest = reader.amount("interest", currency)
+        basis = reader.amount("basis_face", currency, required=False)
+        if basis is not None and basis <= 0:
+            reader.fail("basis_face", "must be positive")
         if not reader.ok or None in (security_id, version, effective, pay, principal, interest):
             continue
         if security is None or security.bond_type not in ("MBS", "ABS"):
@@ -310,10 +314,16 @@ def _load_projections(
         if existing is not None and existing[0] != effective:
             reader.fail("effective_date", "version has inconsistent effective dates")
             continue
+        if bases.setdefault((security_id, version), basis) != basis:
+            reader.fail("basis_face", "version has inconsistent basis_face")
+            continue
         versions.setdefault(version, (effective, []))[1].append(CashFlow(pay, principal, interest))
     return {
         security_id: [
-            ProjectionVersion(version=version, effective_date=effective, flows=tuple(flows))
+            ProjectionVersion(
+                version=version, effective_date=effective, flows=tuple(flows),
+                basis_face=bases.get((security_id, version)),
+            )
             for version, (effective, flows) in sorted(versions.items())
         ]
         for security_id, versions in grouped.items()
@@ -509,6 +519,14 @@ def _require_projection(inputs: Inputs, security: Security, trade: Trade, errors
             f"{trade.lot_id}: no projection effective on or before settlement",
         ))
         return
+    factors = inputs.pool_factors.get(security.security_id, [])
+    for day in {v.effective_date for v in versions if v.basis_face is not None} | {trade.settlement_date}:
+        if any(v.basis_face is not None for v in versions) and factor_on(factors, day) is None:
+            errors.append(ValidationError(
+                POOL_FACTOR, None, "effective_date",
+                f"{trade.lot_id}: no pool factor on or before {day} to restate the lot to basis_face",
+            ))
+            return
     last_pay = max(cash.pay_date for v in versions for cash in v.flows)
     if last_pay < security.bond.maturity_date:
         errors.append(ValidationError(
