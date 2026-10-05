@@ -117,6 +117,8 @@ def test_batch_runs_for_valid_subset_and_writes_schema(tmp_path: Path) -> None:
     assert list(rows[0].keys()) == [
         "lot_id", "security_id", "currency", "date", "accrued_interest_cum", "accrued_interest_daily",
         "interest_income", "amortization", "amortized_cost", "eir", "inflation_accrual",
+        "disposal_face", "disposal_clean_proceeds", "disposal_accrued_received",
+        "disposal_transaction_cost", "derecognized_amortized_cost", "realized_gain_loss",
     ]
     jpy = [row for row in rows if row["lot_id"] == "L0003"]
     assert all("." not in row["amortized_cost"] for row in jpy)
