@@ -222,9 +222,10 @@ class DayCountConvention(ABC):
 
 ### 6.5 TIPS (물가연동국채)
 - 이자·원금은 **물가연동 원금(Adjusted Principal) = Par × Index Ratio** 기준
-- Reference CPI [가정, 확인필요]:
+- Reference CPI [확정]:
   - 매월 1일의 Ref CPI = (M-3)월 CPI-U (NSA)
-  - 월중 임의일 Ref CPI = `RefCPI(M) + (d-1)/해당월일수 × (RefCPI(M+1) - RefCPI(M))`
+  - 월중 임의일 Ref CPI = `RefCPI(M) + (d-1)/해당월일수 × (RefCPI(M+1) - RefCPI(M))`, 결과는 소수 여섯째 자리에서 4사5입하여 **소수 다섯째 자리까지 확정**하여 사용 [확정]
+  - 여기서 `RefCPI(M)` = 결제월의 3개월 전 CPI, `RefCPI(M+1)` = 2개월 전 CPI
 - Index Ratio = `Ref CPI(계산일) / Ref CPI(발행 기준일)`, 소수 5자리 [확정]
 - 경과이자 = 실질(real) 쿠폰율 기반 이자 × Index Ratio 적용 원금 (Day Count 기본 ACT/TSY [가정]). EIR도 실질 기준으로 산출 [확정]
 - 별도 산출: **인플레이션 보상 경과분** = `Par × (IndexRatio(t) - IndexRatio(t0))`
@@ -546,7 +547,7 @@ v0.3의 16개 미결 사항은 모두 0장("v0.3 → v0.4 확정 로그")에 정
 v0.3 13장에 나열되었던 **구조적 결정**(반올림, Day Count, 채권유형별 처리방식, 입출력 형식 등)은 모두 해결되었다. 다만 그 결정을 구현하는 과정에서 나오는 **세부 디테일** 수준의 `[가정]`/`[확인필요]`는 각 장에 남아있으며, 구현 단계에서 하나씩 질문해 확정한다. 주요 항목:
 - 5.1 Day Count 코드의 **실제 전산 코드값** (순번만 정의됨, 시스템 연동 시 필요)
 - 5.2 D30/360의 세부 Bond Basis 규칙 [가정]
-- 6.3 Reference CPI 보간 방식, 6.3 MBS 기본 Day Count(30P/360) 가정
+- 6.3 MBS 기본 Day Count(30P/360) 가정
 - 9.1 취득원가 공식, 9.2 EIR 솔버 허용오차(`1e-12`)
 - 9.5 Floating EIR 재산출 시 장부가 처리(전진적) [가정, 확인필요]
 - 10.2 CSV 파일 포맷의 세부 규칙, 10.3 `business_day_conv` 의 구체적 enum 값(Following 등), 10.5 `projected_cashflows.csv` 의 버전 구분 필요 여부

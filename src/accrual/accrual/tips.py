@@ -28,7 +28,8 @@ def interpolated_ref_cpi(monthly_cpi: Mapping[tuple[int, int], Decimal], on: dat
     days_in_month = calendar.monthrange(on.year, on.month)[1]
     with localcontext() as ctx:
         ctx.prec = WORKING_PRECISION
-        return start + Decimal(on.day - 1) / Decimal(days_in_month) * (end - start)
+        interpolated = start + Decimal(on.day - 1) / Decimal(days_in_month) * (end - start)
+        return interpolated.quantize(_INDEX_RATIO_QUANTUM, rounding=ROUND_HALF_UP)
 
 
 def index_ratio(ref_cpi: Decimal, base_ref_cpi: Decimal) -> Decimal:

@@ -88,3 +88,13 @@ def test_ref_cpi_missing_month_raises() -> None:
 
     with pytest.raises(ValueError):
         interpolated_ref_cpi({}, date(2024, 1, 15))
+
+
+def test_ref_cpi_is_rounded_half_up_to_five_places() -> None:
+    cpi = {
+        (2023, 11): Decimal("307.051"),
+        (2023, 12): Decimal("306.746"),
+        (2024, 1): Decimal("308.417"),
+        (2024, 2): Decimal("310.326"),
+    }
+    assert interpolated_ref_cpi(cpi, date(2024, 2, 10)) == Decimal("306.95634")
